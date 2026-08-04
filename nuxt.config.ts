@@ -13,6 +13,9 @@ export default defineNuxtConfig({
   css: ['~/assets/css/main.css'],
 
   routeRules: {
+    '/': {
+      redirect: '/dashboard'
+    },
     '/api/**': {
       cors: true
     }

@@ -1,0 +1,94 @@
+import type { Category, CategoryFlatRow } from '~/types'
+
+// Port of the design's `window.VertexCat` (category-store.js).
+// Hierarchical category tree persisted in localStorage. All reads are
+// SSR-safe — on the server `localStorage` is undefined and we fall back
+// to DEFAULTS so the first render matches the client's initial paint.
+
+const KEY = 'vertex_categories_v3'
+
+const DEFAULTS: Category[] = [
+  { id: 'c_sim', name: 'SIM Cards', parentId: null, enabled: true },
+  { id: 'c_sim_tour', name: 'Tourist SIM', parentId: 'c_sim', enabled: true },
+  { id: 'c_sim_res', name: 'Resident SIM', parentId: 'c_sim', enabled: true },
+  { id: 'c_sim_esim', name: 'eSIM', parentId: 'c_sim', enabled: true },
+  { id: 'c_dev', name: 'Devices', parentId: null, enabled: true },
+  { id: 'c_dev_rout', name: 'Router', parentId: 'c_dev', enabled: true },
+  { id: 'c_dev_dong', name: 'Dongle', parentId: 'c_dev', enabled: true },
+  { id: 'c_data', name: 'Data Plan', parentId: null, enabled: true },
+  { id: 'c_data_pre', name: 'Prepaid Data', parentId: 'c_data', enabled: true },
+  { id: 'c_data_unl', name: 'Unlimited Data', parentId: 'c_data', enabled: true },
+  { id: 'c_wifi', name: 'WiFi', parentId: null, enabled: true },
+  { id: 'c_wifi_pkt', name: 'Pocket WiFi', parentId: 'c_wifi', enabled: true },
+  { id: 'c_wifi_home', name: 'Home Router', parentId: 'c_wifi', enabled: true },
+  { id: 'c_head', name: 'Headphones', parentId: null, enabled: true },
+  { id: 'c_acc', name: 'Accessories', parentId: null, enabled: true },
+  { id: 'c_acc_chg', name: 'Chargers', parentId: 'c_acc', enabled: true },
+  { id: 'c_acc_case', name: 'Cases', parentId: 'c_acc', enabled: true }
+]
+
+function clone(c: Category): Category {
+  return { id: c.id, name: c.name, parentId: c.parentId || null, enabled: c.enabled !== false }
+}
+
+export function loadCategories(): Category[] {
+  if (import.meta.client) {
+    try {
+      const r = JSON.parse(localStorage.getItem(KEY) || 'null')
+      if (Array.isArray(r) && r.length) return r.map(clone)
+    } catch {
+      // ignore malformed storage
+    }
+  }
+  return DEFAULTS.map(clone)
+}
+
+export function categoryById(list: Category[], id: string | null): Category | null {
+  return list.find(c => c.id === id) || null
+}
+
+export function categoryByName(list: Category[], name: string): Category | null {
+  return list.find(c => c.name === name) || null
+}
+
+export function categoryChildren(list: Category[], id: string | null): Category[] {
+  return list.filter(c => c.parentId === id)
+}
+
+export function categoryPathById(list: Category[], id: string): string {
+  const parts: string[] = []
+  let guard = 0
+  let c = categoryById(list, id)
+  while (c && guard++ < 20) {
+    parts.unshift(c.name)
+    c = c.parentId ? categoryById(list, c.parentId) : null
+  }
+  return parts.join(' / ')
+}
+
+// Ordered rows for the hierarchical dropdown; parent nodes are headers.
+export function flattenCategories(list: Category[]): CategoryFlatRow[] {
+  const out: CategoryFlatRow[] = []
+  const walk = (parentId: string | null, depth: number) => {
+    for (const c of categoryChildren(list, parentId)) {
+      const kids = categoryChildren(list, c.id)
+      out.push({ id: c.id, name: c.name, depth, selectable: kids.length === 0, header: kids.length > 0 })
+      if (kids.length) walk(c.id, depth + 1)
+    }
+  }
+  walk(null, 0)
+  return out
+}
+
+// Self + ALL descendant ids — filtering by a parent matches its whole subtree.
+export function categorySubtreeIds(list: Category[], id: string): string[] {
+  const ids: string[] = [id]
+  const walk = (pid: string) => {
+    for (const k of categoryChildren(list, pid)) {
+      ids.push(k.id)
+      walk(k.id)
+    }
+  }
+  walk(id)
+  return ids
+}

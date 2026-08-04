@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Nuxt 4 dashboard SPA built on **Nuxt UI v4** (`@nuxt/ui`). Directory is named `crm-inventory-fe`, but the code is still the upstream Nuxt UI dashboard template (Home / Inbox / Customers / Settings) — treat existing pages as scaffolding to replace when building CRM/inventory features. Package manager is **pnpm** (v11). Not a git repo yet.
+Nuxt 4 dashboard app built on **Nuxt UI v4** (`@nuxt/ui`). A **Vertex Digital Marketing** product/inventory system, built by porting screens from a Claude Design project via the `DesignSync` MCP (see the `vertex-design-import` / `vertex-import-conventions` memories). The upstream Nuxt UI template pages/layout/components were deleted — only the Vertex screens remain. Package manager is **pnpm** (v11). Not a git repo yet.
 
 ## Commands
 
@@ -20,14 +20,12 @@ No test runner is configured. `postinstall` runs `nuxt prepare` (regenerates `.n
 
 ## Architecture
 
-Nuxt 4 `app/` directory layout. Auto-imports are on — do not manually import Vue APIs, composables, `~/types`, or components; refer to components by PascalCased path (e.g. `app/components/customers/AddModal.vue` → `<CustomersAddModal>`, `home/HomeStats.vue` → `<HomeStats>`).
+Nuxt 4 `app/` directory layout. Auto-imports are on — do not manually import Vue APIs, `~/types`, `app/utils/*`, or components; refer to components by PascalCased path (e.g. `app/components/vertex/Sidebar.vue` → `<VertexSidebar>`).
 
-- **Data flow**: no real backend. `server/api/*.ts` are Nitro `eventHandler`s returning hardcoded mock arrays typed against `~/types`. Pages fetch them with `useFetch<T>('/api/...', { lazy: true })`. To add data, add a `server/api/` handler + a matching interface in `app/types/index.d.ts`.
-- **Types**: all shared domain types live in [app/types/index.d.ts](app/types/index.d.ts) (`User`, `Mail`, `Member`, `Sale`, `Stat`, `Notification`, `Period`, `Range`). Import via `~/types`.
-- **Layout shell**: [app/layouts/default.vue](app/layouts/default.vue) owns the whole dashboard chrome — sidebar nav `links` array, `UDashboardGroup`/`UDashboardSidebar`, and the command-palette `groups`. Add a page → add its entry to `links` here. Pages render inside a `<UDashboardPanel>` with `#header` (`UDashboardNavbar`) and `#body` slots.
-- **Global state / shortcuts**: [app/composables/useDashboard.ts](app/composables/useDashboard.ts) is a `createSharedComposable` holding cross-page state (notifications slideover) and global `defineShortcuts` (`g-h`/`g-i`/`g-c`/`g-s` nav, `n` notifications).
-- **Tables**: TanStack Table Core via Nuxt UI `UTable`. Columns are `TableColumn<T>[]` built with `h()` render functions; components used inside them are pulled in with `resolveComponent('UAvatar')` etc. See [app/pages/customers.vue](app/pages/customers.vue) for the reference pattern (sorting, faceted filters, row selection, pagination).
-- **Charts**: Unovis (`@unovis/vue`). Split into `.client.vue` / `.server.vue` variants (see `app/components/home/HomeChart.*`).
+- **Layout shell**: [app/layouts/default.vue](app/layouts/default.vue) is the base shell — `<VertexSidebar>` (collapsible grouped nav) + a content `<slot>`, DM Sans font. Every page renders in it by default. `/` redirects to `/dashboard` (routeRules in [nuxt.config.ts](nuxt.config.ts)).
+- **Screens**: ported from Claude Design `*.dc.html` sources. [app/pages/dashboard.vue](app/pages/dashboard.vue) is the reference (stats grid + product table with rule-based filters, chips, pagination). See the `vertex-import-conventions` memory before porting more.
+- **Types**: shared domain types in [app/types/index.d.ts](app/types/index.d.ts) (`Category`, `Platform`, `ProductRow`, `FilterRule`, `DashStat`, …). Import via `~/types`.
+- **Data / stores**: no backend. Domain data lives in `app/utils/*.ts` modules (`categories.ts`, `platforms.ts` — ports of the design's `VertexCat`/`VertexPlatform`), persisted in `localStorage`. **SSR trap**: read `localStorage`/`Date.now()` only under `import.meta.client` or in `onMounted`, else hydration mismatch.
 
 ## Conventions
 

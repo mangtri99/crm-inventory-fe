@@ -1,60 +1,67 @@
-import type { AvatarProps } from '@nuxt/ui'
+// ── Vertex inventory domain (design import) ──
 
-export type UserStatus = 'subscribed' | 'unsubscribed' | 'bounced'
-export type SaleStatus = 'paid' | 'failed' | 'refunded'
-
-export interface User {
-  id: number
-  name: string
-  email: string
-  avatar?: AvatarProps
-  status: UserStatus
-  location: string
-}
-
-export interface Mail {
-  id: number
-  unread?: boolean
-  from: User
-  subject: string
-  body: string
-  date: string
-}
-
-export interface Member {
-  name: string
-  username: string
-  role: 'member' | 'owner'
-  avatar: AvatarProps
-}
-
-export interface Stat {
-  title: string
-  icon: string
-  value: number | string
-  variation: number
-  formatter?: (value: number) => string
-}
-
-export interface Sale {
+export interface Category {
   id: string
-  date: string
-  status: SaleStatus
-  email: string
-  amount: number
+  name: string
+  parentId: string | null
+  enabled: boolean
 }
 
-export interface Notification {
-  id: number
-  unread?: boolean
-  sender: User
-  body: string
-  date: string
+export interface CategoryFlatRow {
+  id: string
+  name: string
+  depth: number
+  selectable: boolean
+  header: boolean
 }
 
-export type Period = 'daily' | 'weekly' | 'monthly'
+export interface Platform {
+  id: string
+  name: string
+  code: string
+  url: string
+}
 
-export interface Range {
-  start: Date
-  end: Date
+export type ProductType = 'single' | 'variant' | 'bundle'
+export type ProductStatus = 'Active' | 'Inactive'
+
+// A row backing the Dashboard "Recent Products" table.
+export interface ProductRow {
+  id?: string
+  name: string
+  sku: string
+  reference?: string
+  category?: string
+  categoryId?: string
+  categoryPath?: string
+  status: ProductStatus
+  productType: ProductType
+  hasVariants: boolean
+  variantCount: number
+  platformIds: string[]
+  platformNames?: string[]
+  image?: string
+  createdAt?: number
+  isNew?: boolean
+}
+
+// Dashboard summary tile (distinct from the template's `Stat`).
+export interface DashStat {
+  label: string
+  value: string
+  delta: string
+  deltaColor: string
+  icon: string
+  iconBg: string
+  iconColor: string
+}
+
+export type FilterField = 'name' | 'variants' | 'sku' | 'category' | 'productType' | 'platform' | 'status'
+
+export interface FilterRule {
+  id: string
+  field: FilterField
+  operator: 'is' | 'contains'
+  value: string
+  enabled: boolean
 }

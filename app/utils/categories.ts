@@ -1,4 +1,4 @@
-import type { Category, CategoryFlatRow } from '~/types'
+import type { Category, CategoryFlatRow, CategoryTreeRow, CatEntry, CatScopeEntry } from '~/types'
 
 // Port of the design's `window.VertexCat` (category-store.js).
 // Hierarchical category tree persisted in localStorage. All reads are
@@ -6,6 +6,7 @@ import type { Category, CategoryFlatRow } from '~/types'
 // to DEFAULTS so the first render matches the client's initial paint.
 
 const KEY = 'vertex_categories_v3'
+const PROD_KEY = 'vertex_cat_products_v1'
 
 const DEFAULTS: Category[] = [
   { id: 'c_sim', name: 'SIM Cards', parentId: null, enabled: true },
@@ -43,8 +44,22 @@ export function loadCategories(): Category[] {
   return DEFAULTS.map(clone)
 }
 
+export function saveCategories(list: Category[]): void {
+  if (import.meta.client) {
+    try {
+      localStorage.setItem(KEY, JSON.stringify(list))
+    } catch {
+      // ignore storage failure
+    }
+  }
+}
+
 export function categoryById(list: Category[], id: string | null): Category | null {
   return list.find(c => c.id === id) || null
+}
+
+export function categoryTopLevel(list: Category[]): Category[] {
+  return list.filter(c => !c.parentId)
 }
 
 export function categoryByName(list: Category[], name: string): Category | null {
@@ -78,6 +93,60 @@ export function flattenCategories(list: Category[]): CategoryFlatRow[] {
   }
   walk(null, 0)
   return out
+}
+
+// Full-tree rows (depth-ordered, all nodes) for the Categories tree panel.
+export function categoryTreeRows(list: Category[]): CategoryTreeRow[] {
+  const out: CategoryTreeRow[] = []
+  const walk = (parentId: string | null, depth: number) => {
+    for (const c of categoryChildren(list, parentId)) {
+      out.push({
+        id: c.id,
+        name: c.name,
+        depth,
+        parentId: c.parentId,
+        enabled: c.enabled !== false,
+        childCount: categoryChildren(list, c.id).length
+      })
+      walk(c.id, depth + 1)
+    }
+  }
+  walk(null, 0)
+  return out
+}
+
+// ── per-category product membership + per-scope positions store ──
+// Shape: { <catId>: { members: [pid], scopes: { default: {positions}, <pid>: {positions, override} } } }
+export function loadCatProducts(): Record<string, CatEntry> {
+  if (import.meta.client) {
+    try {
+      return JSON.parse(localStorage.getItem(PROD_KEY) || '{}') || {}
+    } catch {
+      // ignore malformed storage
+    }
+  }
+  return {}
+}
+
+export function saveCatProducts(all: Record<string, CatEntry>): void {
+  if (import.meta.client) {
+    try {
+      localStorage.setItem(PROD_KEY, JSON.stringify(all))
+    } catch {
+      // ignore storage failure
+    }
+  }
+}
+
+export function categoryEntry(catId: string): CatEntry {
+  const e = loadCatProducts()[catId]
+  return { members: e?.members || [], scopes: (e?.scopes || {}) as Record<string, CatScopeEntry> }
+}
+
+export function saveCategoryEntry(catId: string, entry: CatEntry): void {
+  const all = loadCatProducts()
+  all[catId] = { members: entry.members || [], scopes: entry.scopes || {} }
+  saveCatProducts(all)
 }
 
 // Self + ALL descendant ids — filtering by a parent matches its whole subtree.

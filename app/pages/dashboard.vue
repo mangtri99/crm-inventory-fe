@@ -154,7 +154,7 @@ const allRows = computed<EnrichedRow[]>(() => {
       categoryPath: r.categoryPath,
       platformIds: r.platformIds || [],
       platformNames: r.platformNames
-    }, cats, plats, () => { window.location.href = 'Product Detail.dc.html?id=' + encodeURIComponent(r.id || '') })
+    }, cats, plats, () => { router.push({ path: '/products/detail', query: { id: r.id || '' } }) })
   })
 
   const demo: EnrichedRow[] = demoProducts.map(p => enrich({
@@ -168,7 +168,7 @@ const allRows = computed<EnrichedRow[]>(() => {
     isNew: false,
     productCategory: p.category,
     platformIds: p.platformIds
-  }, cats, plats, () => { window.location.href = 'Product Detail.dc.html' }))
+  }, cats, plats, () => { router.push('/products/detail') }))
 
   return stored.concat(demo)
 })

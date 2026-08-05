@@ -15,6 +15,27 @@ export interface CategoryFlatRow {
   header: boolean
 }
 
+// Full-tree row for the Categories page tree panel (every node selectable).
+export interface CategoryTreeRow {
+  id: string
+  name: string
+  depth: number
+  parentId: string | null
+  enabled: boolean
+  childCount: number
+}
+
+// Per-category product membership + per-scope storefront positions
+// (design's `vertex_cat_products_v1`). scopes keyed by 'default' | platformId.
+export interface CatScopeEntry {
+  positions: Record<string, number>
+  override?: boolean
+}
+export interface CatEntry {
+  members: string[]
+  scopes: Record<string, CatScopeEntry>
+}
+
 export interface Platform {
   id: string
   name: string

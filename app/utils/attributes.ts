@@ -34,6 +34,30 @@ export function loadAttributeDefs(): AttributeDef[] {
   return SEED.map(clone)
 }
 
+export function saveAttributeDefs(list: AttributeDef[]): void {
+  if (import.meta.client) {
+    try {
+      localStorage.setItem(KEY, JSON.stringify(list))
+    } catch {
+      // ignore storage failure
+    }
+  }
+}
+
+// How many stored products reference this attribute name (delete-protection).
+export function attributeUsageCount(name: string): number {
+  if (!import.meta.client) return 0
+  const target = (name || '').toLowerCase()
+  try {
+    const products: { attributes?: { name?: string }[] }[] = JSON.parse(localStorage.getItem('vertex_products') || '[]') || []
+    return products.filter(p =>
+      (p.attributes || []).some(a => (a.name || '').toLowerCase() === target)
+    ).length
+  } catch {
+    return 0
+  }
+}
+
 export function attributeNames(list: AttributeDef[]): string[] {
   return list.map(a => a.name)
 }

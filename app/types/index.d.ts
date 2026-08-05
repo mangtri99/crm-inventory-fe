@@ -22,6 +22,21 @@ export interface Platform {
   url: string
 }
 
+// Variant attribute master (attribute-store.js): a name + its preset values.
+export interface AttributeDef {
+  id: string
+  name: string
+  values: string[]
+}
+
+// Reusable Initial-Fee line-item component (fee-store.js).
+export interface Fee {
+  id: string
+  name: string
+  description: string
+  system: boolean
+}
+
 export type ProductType = 'single' | 'variant' | 'bundle'
 export type ProductStatus = 'Active' | 'Inactive'
 
@@ -43,6 +58,19 @@ export interface ProductRow {
   image?: string
   createdAt?: number
   isNew?: boolean
+}
+
+// The full record persisted to `vertex_products` by the Create form —
+// a superset of the ProductRow the Dashboard table reads back.
+export interface StoredProduct extends ProductRow {
+  notes?: string
+  description?: string
+  overrides?: Record<string, unknown>
+  imageName?: string
+  bundle?: { components: { id: string, name: string, products: { id: string, name: string, sku: string }[] }[] } | null
+  attributes?: { name: string, values: string[] }[]
+  variants?: { name: string, sku: string, price: string, stock: string, active: boolean }[]
+  pricing?: unknown[]
 }
 
 // Dashboard summary tile (distinct from the template's `Stat`).

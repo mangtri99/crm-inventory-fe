@@ -346,7 +346,7 @@ function statusBadgeClass(status: string) {
 const hasActiveFilters = computed(() => activeRules.value.length > 0)
 
 function onNewProduct() {
-  router.push('/dashboard')
+  router.push('/products/new')
 }
 </script>
 

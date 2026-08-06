@@ -44,3 +44,32 @@ export function loadFees(): Fee[] {
 export function feeById(list: Fee[], id: string): Fee | null {
   return list.find(f => f.id === id) || null
 }
+
+export function saveFees(list: Fee[]): void {
+  if (import.meta.client) {
+    try {
+      localStorage.setItem(KEY, JSON.stringify(list))
+    } catch {
+      // ignore storage failure
+    }
+  }
+}
+
+// How many stored products reference this fee component (delete-protection).
+// Mirrors the design's usageCount: checks `pricing.components` (undefined for
+// our array-shaped `pricing`, so this is effectively 0 in practice) then a
+// legacy top-level `initialComponents`.
+export function feeUsageCount(id: string): number {
+  if (!import.meta.client) return 0
+  type Comp = { feeId?: string, id?: string }
+  type StoredP = { pricing?: { components?: Comp[] }, initialComponents?: Comp[] }
+  try {
+    const products = (JSON.parse(localStorage.getItem('vertex_products') || '[]') || []) as StoredP[]
+    return products.filter((p) => {
+      const comps = (p.pricing && p.pricing.components) || p.initialComponents || []
+      return comps.some(c => c.feeId === id || c.id === id)
+    }).length
+  } catch {
+    return 0
+  }
+}

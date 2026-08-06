@@ -58,6 +58,28 @@ export interface Fee {
   system: boolean
 }
 
+// Configuration store (config-store.js): one Default scope + per-platform overrides.
+export interface ConfigField {
+  key: string
+  label: string
+  type: 'text' | 'textarea' | 'toggle'
+  placeholder?: string
+  synced?: boolean
+}
+export interface ConfigGroup {
+  group: string
+  title: string
+  icon: string
+  fields: ConfigField[]
+}
+export type ConfigValue = string | boolean
+export type ConfigDefaults = Record<string, ConfigValue>
+export interface ConfigOverride {
+  override: boolean
+  value: ConfigValue
+}
+export type ConfigOverrides = Record<string, ConfigOverride>
+
 export type ProductType = 'single' | 'variant' | 'bundle'
 export type ProductStatus = 'Active' | 'Inactive'
 

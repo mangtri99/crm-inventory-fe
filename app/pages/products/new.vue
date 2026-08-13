@@ -62,8 +62,12 @@ const componentModal = ref<ComponentModalState | null>(null)
 const saveConfirmOpen = ref(false)
 const cancelConfirmOpen = ref(false)
 const savedToast = ref(false)
+const savedToastMsg = ref('Product created successfully')
 const saveError = ref<string[] | null>(null)
 const formDirty = ref(false)
+// snapshot of the attributes last "applied" — variant combinations only
+// regenerate when the user clicks Apply (design no longer auto-regenerates).
+const appliedKey = ref('')
 
 // masters — fees seeded deterministically so the pre-selected Pricing rows
 // render identically on server + first client paint; the rest follow the
@@ -133,7 +137,14 @@ function closeDropdown() {
 function setType(type: ProductType) {
   productType.value = type
   closeDropdown()
-  if (type === 'variant') regenerate()
+  if (type === 'variant') {
+    regenerate()
+    // carry a single-product monthly price into the first variant row
+    const carry = form.priceMonthly
+    if (carry !== '' && carry != null && variants.value.length && (variants.value[0]!.price === '' || variants.value[0]!.price == null)) {
+      variants.value = variants.value.map((v, i) => i === 0 ? { ...v, price: carry } : v)
+    }
+  }
 }
 const productTypeLabel = computed(() => ({ single: 'Single', variant: 'Variant', bundle: 'Bundle' })[productType.value] || 'Single')
 const productTypeItems = computed(() =>
@@ -176,11 +187,9 @@ const categoryDisplay = computed(() =>
 )
 const categoryFlat = computed(() =>
   flattenCategories(categories.value).map((o) => {
-    const selected = o.selectable && o.id === form.categoryId
-    const style = o.header
-      ? 'width:100%;text-align:left;border:none;background:transparent;padding:8px 10px 4px;font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.04em;cursor:default;'
-      : `width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;border:none;border-radius:6px;background:${selected ? '#ecfdf5' : 'transparent'};padding:8px 10px;padding-left:${o.depth ? '28px' : '10px'};font-size:14px;color:${selected ? '#047857' : '#334155'};font-weight:${selected ? 600 : 400};cursor:pointer;`
-    return { id: o.id, name: o.name, header: o.header, selected, style }
+    const selected = o.id === form.categoryId
+    const style = `width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;border:none;border-radius:6px;background:${selected ? '#ecfdf5' : 'transparent'};padding:8px 10px;padding-left:${o.depth ? (10 + o.depth * 16) : 10}px;font-size:14px;color:${selected ? '#047857' : '#334155'};font-weight:${selected ? 600 : 400};cursor:pointer;`
+    return { id: o.id, name: o.name, selected, style }
   })
 )
 function pickCategory(id: string) {
@@ -231,18 +240,15 @@ function addAttribute() {
 }
 function removeAttribute(id: string) {
   attributes.value = attributes.value.filter(a => a.id !== id)
-  regenerate()
 }
 function onAttributeSelect(id: string, name: string) {
   attributes.value = attributes.value.map(a => a.id === id ? { ...a, name, values: [] } : a)
-  regenerate()
 }
 function addAttributeValue(id: string, value: string) {
   if (!value) return
   attributes.value = attributes.value.map(a =>
     a.id === id && a.values.indexOf(value) === -1 ? { ...a, values: [...a.values, value] } : a
   )
-  regenerate()
 }
 function onPickValue(id: string, e: Event) {
   const el = e.target as HTMLSelectElement
@@ -253,16 +259,20 @@ function removeAttributeValue(id: string, value: string) {
   attributes.value = attributes.value.map(a =>
     a.id === id ? { ...a, values: a.values.filter(v => v !== value) } : a
   )
-  regenerate()
 }
 
-const attributeTypeOptions = computed(() => attributeNames(attributeDefs.value))
 const attributeRows = computed(() =>
   attributes.value.map((a) => {
     const options = attributeAvailableFor(attributeDefs.value, a.name, a.values)
+    // attribute names already used by another row are shown disabled
+    const typeOptions = attributeNames(attributeDefs.value).map((opt) => {
+      const usedElsewhere = attributes.value.some(x => x.id !== a.id && x.name === opt)
+      return { value: opt, label: usedElsewhere ? opt + ' (already used)' : opt, disabled: usedElsewhere }
+    })
     return {
       id: a.id,
       name: a.name,
+      typeOptions,
       valueChips: a.values,
       valueOptions: options,
       canAddValue: !!a.name && options.length > 0,
@@ -274,7 +284,19 @@ const attributeRows = computed(() =>
   })
 )
 
+// Variant combinations regenerate only on Apply (not on every edit).
+const attrSignature = () => JSON.stringify(attributes.value.map(a => ({ name: a.name, values: a.values })))
+const applyDisabled = computed(() => {
+  const valid = attributes.value.some(a => a.name && a.name.trim() && a.values.length > 0)
+  if (!valid) return true
+  return attrSignature() === appliedKey.value
+})
+function applyVariants() {
+  regenerate()
+}
+
 function regenerate() {
+  appliedKey.value = attrSignature()
   const attrs = attributes.value.filter(a => a.name.trim() && a.values.length > 0)
   if (attrs.length === 0) {
     variants.value = []
@@ -286,13 +308,15 @@ function regenerate() {
     combos.forEach(c => a.values.forEach(v => next.push([...c, v])))
     combos = next
   })
+  const base = (form.sku || '').trim().toUpperCase()
+  const skuFor = (combo: string[]) => (base ? base + '-' : '') + combo.map(v => String(v).toUpperCase().replace(/\s+/g, '')).join('-')
   const existing: Record<string, VariantRow> = {}
   variants.value.forEach((v) => {
     existing[v.key] = v
   })
   variants.value = combos.map((combo) => {
     const key = combo.join(' / ')
-    return existing[key] || { key, name: key, sku: '', price: '', stock: '', active: true }
+    return existing[key] || { key, name: key, sku: skuFor(combo), price: '', stock: '', active: true }
   })
 }
 
@@ -448,6 +472,9 @@ function toggleSubscription() {
 const subscriptionHelper = computed(() =>
   isSubscription.value ? 'Recurring — customers pay a monthly fee.' : 'One-time purchase — no monthly fee.'
 )
+// Variant products price per row, so the product-level price block is hidden.
+const showProductPrice = computed(() => productType.value !== 'variant')
+const pricePerVariant = computed(() => productType.value === 'variant')
 
 // ── status ──
 function togglePublished() {
@@ -477,8 +504,14 @@ function validate(): string[] {
   }
   return missing
 }
-const missingFieldsLabel = computed(() => (saveError.value || []).join(', '))
+// '__draftname__' is a sentinel for the Save-as-Draft name check — shown inline
+// under Product Name, not in the top "missing fields" banner.
+const realMissing = computed(() => (saveError.value || []).filter(x => x !== '__draftname__'))
+const showSaveError = computed(() => realMissing.value.length > 0)
+const missingFieldsLabel = computed(() => realMissing.value.join(', '))
+const draftNameError = computed(() => (saveError.value || []).indexOf('__draftname__') !== -1)
 const saveConfirmName = computed(() => form.name.trim() || 'this product')
+const saveDisabled = computed(() => validate().length > 0)
 
 function onSaveProduct() {
   const missing = validate()
@@ -489,7 +522,15 @@ function onSaveProduct() {
   saveError.value = null
   saveConfirmOpen.value = true
 }
-function commitSave() {
+function onSaveDraftProduct() {
+  if (!form.name.trim()) {
+    saveError.value = ['__draftname__']
+    return
+  }
+  saveError.value = null
+  commitSave(true)
+}
+function commitSave(asDraft = false) {
   const f = form
   const variantsOn = productType.value === 'variant'
   const vList = variantsOn
@@ -509,7 +550,8 @@ function commitSave() {
       .map(id => platformById(platforms.value, id)?.name)
       .filter((n): n is string => !!n),
     overrides: {},
-    status: published.value ? 'Active' : 'Inactive',
+    status: asDraft ? 'Inactive' : (published.value ? 'Active' : 'Inactive'),
+    isDraft: asDraft,
     productType: productType.value,
     hasVariants: variantsOn,
     variantCount: variantsOn ? vList.length : 0,
@@ -532,6 +574,12 @@ function commitSave() {
   } catch {
     // ignore storage failure
   }
+  try {
+    sessionStorage.setItem('vertex_toast', asDraft ? 'Saved as draft' : 'Product created')
+  } catch {
+    // ignore
+  }
+  savedToastMsg.value = asDraft ? 'Saved as draft' : 'Product created successfully'
   savedToast.value = true
   formDirty.value = false
   saveConfirmOpen.value = false
@@ -558,7 +606,7 @@ function onConfirmDiscard() {
       class="fixed top-6 right-6 bg-slate-900 text-white px-[18px] py-[13px] rounded-[10px] flex items-center gap-2.5 text-[13px] font-semibold shadow-[0_8px_24px_rgba(0,0,0,0.25)] z-[200]"
     >
       <UIcon name="i-lucide-circle-check-big" class="w-4 h-4 text-green-500" />
-      Product created successfully
+      {{ savedToastMsg }}
     </div>
 
     <!-- header -->
@@ -566,7 +614,10 @@ function onConfirmDiscard() {
       <div>
         <div class="text-[13px] text-slate-500 mb-1">
           <NuxtLink to="/dashboard" class="text-green-600 no-underline hover:underline">
-            Products
+            Inventory
+          </NuxtLink>
+          / <NuxtLink to="/dashboard" class="text-green-600 no-underline hover:underline">
+            Product
           </NuxtLink>
           / <span class="text-slate-900 font-semibold">Create New Product</span>
         </div>
@@ -582,7 +633,15 @@ function onConfirmDiscard() {
           Cancel
         </button>
         <button
-          class="border-none bg-green-500 text-white text-sm font-semibold px-5 py-[9px] rounded-lg cursor-pointer shadow-sm hover:bg-green-600 transition-colors"
+          class="border border-slate-300 bg-white text-slate-700 text-sm font-semibold px-[18px] py-[9px] rounded-lg cursor-pointer inline-flex items-center justify-center hover:bg-slate-50 transition-colors"
+          @click="onSaveDraftProduct"
+        >
+          Save as Draft
+        </button>
+        <button
+          :disabled="saveDisabled"
+          class="border-none text-sm font-semibold px-5 py-[9px] rounded-lg transition-colors"
+          :class="saveDisabled ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-green-500 text-white cursor-pointer shadow-sm hover:bg-green-600'"
           @click="onSaveProduct"
         >
           Save Product
@@ -593,7 +652,7 @@ function onConfirmDiscard() {
     <div class="flex flex-col gap-6">
       <!-- save error -->
       <div
-        v-if="saveError && saveError.length"
+        v-if="showSaveError"
         class="flex items-start gap-3 bg-red-50 border border-red-200 rounded-[10px] px-4 py-3.5"
       >
         <UIcon name="i-lucide-circle-alert" class="w-[18px] h-[18px] text-red-600 flex-shrink-0 mt-px" />
@@ -627,6 +686,9 @@ function onConfirmDiscard() {
                 type="text"
                 placeholder="e.g. Premium Cotton T-Shirt"
               >
+              <div v-if="draftNameError" class="text-xs text-red-600 mt-1.5">
+                Enter a product name to save a draft.
+              </div>
             </div>
             <div>
               <label class="field-label">SKU</label>
@@ -752,7 +814,7 @@ function onConfirmDiscard() {
                     :key="opt.id"
                     type="button"
                     :style="opt.style"
-                    @click="opt.header ? null : pickCategory(opt.id)"
+                    @click="pickCategory(opt.id)"
                   >
                     <span>{{ opt.name }}</span>
                     <UIcon v-if="opt.selected" name="i-lucide-check" class="w-[15px] h-[15px] text-green-600" />
@@ -887,8 +949,13 @@ function onConfirmDiscard() {
                         <option value="">
                           Select attribute...
                         </option>
-                        <option v-for="opt in attributeTypeOptions" :key="opt" :value="opt">
-                          {{ opt }}
+                        <option
+                          v-for="opt in attr.typeOptions"
+                          :key="opt.value"
+                          :value="opt.value"
+                          :disabled="opt.disabled"
+                        >
+                          {{ opt.label }}
                         </option>
                       </select>
                     </div>
@@ -937,13 +1004,24 @@ function onConfirmDiscard() {
               </div>
             </div>
 
-            <button
-              class="inline-flex items-center gap-1.5 border border-dashed border-green-500 bg-emerald-50 text-green-600 text-[13px] font-semibold px-4 py-[9px] rounded-lg cursor-pointer"
-              @click="addAttribute"
-            >
-              <UIcon name="i-lucide-plus" class="w-3.5 h-3.5" />
-              Add Attribute
-            </button>
+            <div class="flex items-center gap-2.5 flex-wrap">
+              <button
+                class="inline-flex items-center gap-1.5 border border-dashed border-green-500 bg-emerald-50 text-green-600 text-[13px] font-semibold px-4 py-[9px] rounded-lg cursor-pointer"
+                @click="addAttribute"
+              >
+                <UIcon name="i-lucide-plus" class="w-3.5 h-3.5" />
+                Add Attribute
+              </button>
+              <button
+                :disabled="applyDisabled"
+                class="inline-flex items-center gap-1.5 border-none text-[13px] font-bold px-[18px] py-[9px] rounded-lg transition-colors"
+                :class="applyDisabled ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-green-500 text-white cursor-pointer shadow-sm hover:bg-green-600'"
+                @click="applyVariants"
+              >
+                <UIcon name="i-lucide-check" class="w-3.5 h-3.5" />
+                Apply
+              </button>
+            </div>
 
             <!-- step 2: combinations -->
             <div class="flex items-center justify-between mt-7 mb-3.5">
@@ -1030,7 +1108,7 @@ function onConfirmDiscard() {
                 No variants yet
               </div>
               <div class="text-[13px] text-slate-400">
-                Add attributes with values above to generate combinations.
+                Click Apply to generate variant combinations.
               </div>
             </div>
             <input
@@ -1145,103 +1223,112 @@ function onConfirmDiscard() {
               </button>
             </div>
 
-            <div v-if="isSubscription" class="mb-5">
-              <div class="flex items-end gap-3">
-                <div class="flex-1">
-                  <label class="field-label">Monthly Fee</label>
-                  <div class="relative">
-                    <span class="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">¥</span>
-                    <input
-                      v-model="form.priceMonthly"
-                      class="field-input pl-[26px]"
-                      type="number"
-                      placeholder="0.00"
-                    >
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div>
-              <div class="flex items-baseline gap-2 mb-2">
-                <label class="field-label mb-0">Initial Fee</label>
-                <span class="text-xs text-slate-400">sum of published components below.</span>
-              </div>
-              <div class="border border-slate-200 rounded-[10px] overflow-hidden">
-                <div class="flex items-center gap-2.5 px-3 py-2.5 bg-slate-50 border-b border-slate-200">
-                  <span class="flex-1 min-w-0 text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Component</span>
-                  <span class="w-[150px] flex-shrink-0 text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Amount</span>
-                  <span class="w-24 flex-shrink-0 text-center text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Published</span>
-                  <span class="w-[38px] flex-shrink-0" />
-                </div>
-                <div v-for="c in initialComponentRows" :key="c.index" :style="c.rowStyle">
-                  <div class="flex-1 min-w-0">
-                    <div
-                      v-if="c.isBase"
-                      class="flex items-center gap-2 text-sm font-semibold text-slate-900 py-0.5"
-                    >
-                      {{ c.name }}
-                      <span class="text-[11px] font-semibold px-2 py-px rounded-full bg-blue-50 text-blue-600 border border-blue-200">Base</span>
-                    </div>
-                    <div v-else class="select-wrap">
-                      <select
-                        class="field-input"
-                        :value="c.feeId"
-                        @change="setComponentFeeId(c.index, ($event.target as HTMLSelectElement).value)"
+            <template v-if="showProductPrice">
+              <div v-if="isSubscription" class="mb-5">
+                <div class="flex items-end gap-3">
+                  <div class="flex-1">
+                    <label class="field-label">Monthly Fee</label>
+                    <div class="relative">
+                      <span class="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">¥</span>
+                      <input
+                        v-model="form.priceMonthly"
+                        class="field-input pl-[26px]"
+                        type="number"
+                        placeholder="0.00"
                       >
-                        <option value="">
-                          Select component...
-                        </option>
-                        <option v-for="opt in c.options" :key="opt.id" :value="opt.id">
-                          {{ opt.name }}
-                        </option>
-                      </select>
                     </div>
                   </div>
-                  <div class="relative w-[150px] flex-shrink-0">
-                    <span class="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">¥</span>
-                    <input
-                      class="field-input pl-[26px]"
-                      type="number"
-                      :value="c.amount"
-                      placeholder="0"
-                      @input="setComponentAmount(c.index, ($event.target as HTMLInputElement).value)"
-                    >
-                  </div>
-                  <div class="w-24 flex-shrink-0 flex justify-center">
-                    <button
-                      :disabled="c.publishLocked"
-                      :title="c.publishTitle"
-                      :style="switchTrackCss(c.published, c.publishLocked)"
-                      @click="toggleComponentPublish(c.index)"
-                    >
-                      <span :style="switchKnobCss(c.published)" />
-                    </button>
-                  </div>
-                  <div class="w-[38px] flex-shrink-0">
-                    <button
-                      v-if="c.canRemove"
-                      title="Remove component"
-                      class="btn-icon-hover border border-slate-200 bg-white text-red-500 w-[38px] h-[38px] rounded-lg cursor-pointer flex items-center justify-center"
-                      @click="removeInitialComponent(c.index)"
-                    >
-                      <UIcon name="i-lucide-trash-2" class="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-                <div class="px-3 py-2.5 border-b border-slate-100">
-                  <button
-                    class="inline-flex items-center gap-1.5 border border-dashed border-green-500 bg-emerald-50 text-green-600 text-[13px] font-semibold px-3.5 py-2 rounded-lg cursor-pointer"
-                    @click="addInitialComponent"
-                  >
-                    <UIcon name="i-lucide-plus" class="w-3.5 h-3.5" /> Add component
-                  </button>
-                </div>
-                <div class="flex items-center justify-between px-3.5 py-3 bg-slate-50">
-                  <span class="text-sm font-bold text-slate-900">Initial Fee (Total)</span>
-                  <span class="text-base font-bold text-slate-900">{{ initialTotalLabel }}</span>
                 </div>
               </div>
+
+              <div>
+                <div class="flex items-baseline gap-2 mb-2">
+                  <label class="field-label mb-0">Initial Fee</label>
+                  <span class="text-xs text-slate-400">sum of published components below.</span>
+                </div>
+                <div class="border border-slate-200 rounded-[10px] overflow-hidden">
+                  <div class="flex items-center gap-2.5 px-3 py-2.5 bg-slate-50 border-b border-slate-200">
+                    <span class="flex-1 min-w-0 text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Component</span>
+                    <span class="w-[150px] flex-shrink-0 text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Amount</span>
+                    <span class="w-24 flex-shrink-0 text-center text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Published</span>
+                    <span class="w-[38px] flex-shrink-0" />
+                  </div>
+                  <div v-for="c in initialComponentRows" :key="c.index" :style="c.rowStyle">
+                    <div class="flex-1 min-w-0">
+                      <div
+                        v-if="c.isBase"
+                        class="flex items-center gap-2 text-sm font-semibold text-slate-900 py-0.5"
+                      >
+                        {{ c.name }}
+                        <span class="text-[11px] font-semibold px-2 py-px rounded-full bg-blue-50 text-blue-600 border border-blue-200">Base</span>
+                      </div>
+                      <div v-else class="select-wrap">
+                        <select
+                          class="field-input"
+                          :value="c.feeId"
+                          @change="setComponentFeeId(c.index, ($event.target as HTMLSelectElement).value)"
+                        >
+                          <option value="">
+                            Select component...
+                          </option>
+                          <option v-for="opt in c.options" :key="opt.id" :value="opt.id">
+                            {{ opt.name }}
+                          </option>
+                        </select>
+                      </div>
+                    </div>
+                    <div class="relative w-[150px] flex-shrink-0">
+                      <span class="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">¥</span>
+                      <input
+                        class="field-input pl-[26px]"
+                        type="number"
+                        :value="c.amount"
+                        placeholder="0"
+                        @input="setComponentAmount(c.index, ($event.target as HTMLInputElement).value)"
+                      >
+                    </div>
+                    <div class="w-24 flex-shrink-0 flex justify-center">
+                      <button
+                        :disabled="c.publishLocked"
+                        :title="c.publishTitle"
+                        :style="switchTrackCss(c.published, c.publishLocked)"
+                        @click="toggleComponentPublish(c.index)"
+                      >
+                        <span :style="switchKnobCss(c.published)" />
+                      </button>
+                    </div>
+                    <div class="w-[38px] flex-shrink-0">
+                      <button
+                        v-if="c.canRemove"
+                        title="Remove component"
+                        class="btn-icon-hover border border-slate-200 bg-white text-red-500 w-[38px] h-[38px] rounded-lg cursor-pointer flex items-center justify-center"
+                        @click="removeInitialComponent(c.index)"
+                      >
+                        <UIcon name="i-lucide-trash-2" class="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                  <div class="px-3 py-2.5 border-b border-slate-100">
+                    <button
+                      class="inline-flex items-center gap-1.5 border border-dashed border-green-500 bg-emerald-50 text-green-600 text-[13px] font-semibold px-3.5 py-2 rounded-lg cursor-pointer"
+                      @click="addInitialComponent"
+                    >
+                      <UIcon name="i-lucide-plus" class="w-3.5 h-3.5" /> Add component
+                    </button>
+                  </div>
+                  <div class="flex items-center justify-between px-3.5 py-3 bg-slate-50">
+                    <span class="text-sm font-bold text-slate-900">Initial Fee (Total)</span>
+                    <span class="text-base font-bold text-slate-900">{{ initialTotalLabel }}</span>
+                  </div>
+                </div>
+              </div>
+            </template>
+            <div
+              v-if="pricePerVariant"
+              class="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-3.5 py-3 text-[13px] text-slate-500"
+            >
+              <UIcon name="i-lucide-info" class="w-[15px] h-[15px] text-slate-400 flex-shrink-0" />
+              <span>Each variant has its own price — set it per row in the Variant Combinations table above.</span>
             </div>
           </div>
         </div>
@@ -1387,7 +1474,7 @@ function onConfirmDiscard() {
           </button>
           <button
             class="border-none bg-green-500 text-white text-sm font-bold px-[18px] py-[9px] rounded-lg cursor-pointer"
-            @click="commitSave"
+            @click="commitSave()"
           >
             Save Product
           </button>

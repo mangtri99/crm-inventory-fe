@@ -108,6 +108,7 @@ export interface ProductRow {
 export interface StoredProduct extends ProductRow {
   notes?: string
   description?: string
+  isDraft?: boolean
   overrides?: Record<string, unknown>
   imageName?: string
   bundle?: { components: { id: string, name: string, products: { id: string, name: string, sku: string }[] }[] } | null

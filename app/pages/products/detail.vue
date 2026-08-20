@@ -2,7 +2,6 @@
 import type {
   AttributeDef,
   Category,
-  Fee,
   Platform,
   ProductStatus,
   ProductType
@@ -13,8 +12,9 @@ useHead({ title: 'Product Detail — Vertex' })
 const route = useRoute()
 const router = useRouter()
 
-// ── demo fallback (design's DEMO_PRODUCT / DEMO_PRICING) ──
+// ── shapes ──
 interface DetailVariant { name: string, sku: string, price: number | string, stock: number | string, active: boolean, image?: string | null }
+interface PricingVersion { version?: string, monthly?: string | number, initial?: number, components?: { feeId: string, published: boolean, amount: string }[], active?: boolean }
 interface DetailProduct {
   id: string | null
   name: string
@@ -22,6 +22,7 @@ interface DetailProduct {
   productType: ProductType
   hasVariants?: boolean
   notes?: string
+  description?: string
   category?: string
   categoryId?: string
   categoryPath?: string
@@ -29,20 +30,37 @@ interface DetailProduct {
   platformIds: string[]
   platformNames?: string[]
   status: ProductStatus
+  stock?: string
+  notForSale?: boolean
   image?: string | null
   attributes?: { name: string, values: string[] }[]
   variants?: DetailVariant[]
   bundle?: { components: { name: string, products: { id?: string, name: string, sku: string }[] }[] } | null
+  // pricing is passthrough only — this screen no longer edits it
   pricing?: PricingVersion[]
   overrides?: Overrides
   variantCount?: number
 }
-interface PricingVersion { version?: string, monthly?: string | number, initial?: number, components?: EditComp[], active?: boolean }
-interface DemoPricing { version: string, monthlyFee: number, initialFee: number, status: ProductStatus }
 interface EditAttr { id: string, name: string, values: string[] }
-interface EditComp { feeId: string, published: boolean, amount: string }
-interface ScopeOverride { name?: string, componentAmounts?: Record<string, string> }
+interface ScopeOverride { name?: string, priceMonthly?: string | number, componentAmounts?: Record<string, string> }
 type Overrides = Record<string, ScopeOverride>
+interface HistoryChange { field: string, from: string, to: string }
+interface HistoryEntry { id: string, actor: string, ts: number, changes: HistoryChange[] }
+interface HistoryRow {
+  id: string
+  actor: string
+  initials: string
+  avatarStyle: string
+  timestamp: string
+  isCurrent: boolean
+  rowStyle: string
+  visibleChanges: HistoryChange[]
+  hasMore: boolean
+  toggleLabel: string
+  toggleIcon: string
+}
+
+const DAY = 86400000
 
 const DEMO_PRODUCT: DetailProduct = {
   id: null,
@@ -66,29 +84,48 @@ const DEMO_PRODUCT: DetailProduct = {
   ]
 }
 
-const DEMO_PRICING: DemoPricing[] = [
-  { version: 'v1', monthlyFee: 12.0, initialFee: 0, status: 'Active' },
-  { version: 'v2', monthlyFee: 15.0, initialFee: 25, status: 'Inactive' }
-]
+// Seeded on mount only — the relative timestamps need `Date.now()`, which would
+// otherwise differ between server and client render (hydration mismatch).
+function seedHistory(): HistoryEntry[] {
+  const now = Date.now()
+  return [
+    { id: 's1', actor: 'Olivia Rhye', ts: now - 3600000, changes: [
+      { field: 'Status', from: 'Inactive', to: 'Active' },
+      { field: 'Price (SIM Point)', from: '¥1,200', to: '¥1,300' },
+      { field: 'Stock', from: 'Out of stock', to: 'In stock' }
+    ] },
+    { id: 's2', actor: 'Phoenix Baker', ts: now - DAY - 5400000, changes: [
+      { field: 'Variant 15GB / 8 Days — Price', from: '¥24', to: '¥26' }
+    ] },
+    { id: 's3', actor: 'Demi Wilkinson', ts: now - DAY * 4 - 7200000, changes: [
+      { field: 'Description', from: '—', to: 'Tourist data SIM, valid 8–31 days' },
+      { field: 'Not for sale', from: 'Yes', to: 'No' }
+    ] },
+    { id: 's4', actor: 'Candice Wu', ts: now - DAY * 12 - 3600000, changes: [
+      { field: 'Category', from: 'Data Plan', to: 'SIM Card' }
+    ] }
+  ]
+}
 
-// ── state (mirrors the design's DCLogic component state) ──
+// ── state (mirrors the design's DCLogic state) ──
 const mode = ref<'view' | 'edit'>('view')
 const openDropdown = ref<string | null>(null)
 const scope = ref('default')
 const draftOverrides = ref<Overrides>({})
-const editMonthly = ref<string | number>('')
-const editInitialComponents = ref<EditComp[]>([])
 const editAttributes = ref<EditAttr[]>([])
 const editVariants = ref<DetailVariant[]>([])
+const editAppliedKey = ref<string | null>(null)
 const errors = ref<{ name?: string }>({})
 const cancelConfirmOpen = ref(false)
 const deleteConfirmOpen = ref(false)
 const toastMessage = ref<string | null>(null)
+const historyOpen = ref(false)
+const historyExpanded = ref<Record<string, boolean>>({})
+const historyEntries = ref<HistoryEntry[]>([])
 
 const categories = ref<Category[]>([])
 const platforms = ref<Platform[]>([])
 const attributeDefs = ref<AttributeDef[]>([])
-const fees = ref<Fee[]>([...FEE_SEED])
 
 const isStored = ref(false)
 let editSnapshot: string | null = null
@@ -130,7 +167,7 @@ onMounted(() => {
   categories.value = loadCategories()
   platforms.value = loadPlatforms()
   attributeDefs.value = loadAttributeDefs()
-  fees.value = loadFees()
+  historyEntries.value = seedHistory()
   const rec = loadRecordById(route.query.id)
   const norm = normalizeProduct(rec)
   product.value = norm.product
@@ -152,12 +189,6 @@ function trackStyle(active: boolean) {
 }
 function knobStyle(active: boolean) {
   return `width:18px;height:18px;border-radius:999px;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,0.15);transform:translateX(${active ? '18px' : '0px'});transition:transform 150ms ease;display:block;`
-}
-function switchTrackCss(on: boolean, locked: boolean) {
-  return `width:40px;height:22px;border-radius:999px;border:none;background:${on ? '#00c16a' : '#e2e8f0'};position:relative;padding:2px;display:inline-flex;align-items:center;transition:background 150ms ease;cursor:${locked ? 'not-allowed' : 'pointer'};${locked ? 'opacity:0.65;' : ''}`
-}
-function switchKnobCss(on: boolean) {
-  return `width:18px;height:18px;border-radius:999px;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,0.15);transform:translateX(${on ? '18px' : '0px'});transition:transform 150ms ease;display:block;`
 }
 function badgeStyle(status: string) {
   const active = status === 'Active'
@@ -217,15 +248,15 @@ function seedEditState(p: DetailProduct) {
   const variants = regenerateVariants(attrs, p.variants || [])
   return { attrs, variants }
 }
+const attrKey = (attrs: EditAttr[]) => JSON.stringify((attrs || []).map(a => ({ name: a.name, values: a.values })))
 
 // ── category ──
 const catFlat = computed(() =>
   flattenCategories(categories.value).map((o) => {
-    const selected = o.selectable && o.id === draft.value.categoryId
-    const style = o.header
-      ? 'width:100%;text-align:left;border:none;background:transparent;padding:8px 10px 4px;font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.04em;cursor:default;'
-      : `width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;border:none;border-radius:6px;background:${selected ? '#ecfdf5' : 'transparent'};padding:8px 10px;padding-left:${o.depth ? '28px' : '10px'};font-size:14px;color:${selected ? '#047857' : '#334155'};font-weight:${selected ? 600 : 400};cursor:pointer;`
-    return { id: o.id, name: o.name, header: o.header, selected, style }
+    const selected = o.id === draft.value.categoryId
+    // every row is selectable; parents just read bolder
+    const style = `width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;border:none;border-radius:6px;background:${selected ? '#ecfdf5' : 'transparent'};padding:8px 10px;padding-left:${o.depth ? (10 + o.depth * 16) : 10}px;font-size:14px;color:${selected ? '#047857' : '#0f172a'};font-weight:${selected ? 600 : (o.header ? 600 : 400)};cursor:pointer;`
+    return { id: o.id, name: o.name, selected, style }
   })
 )
 const hasCat = computed(() => !!(draft.value.categoryId || draft.value.category))
@@ -270,22 +301,12 @@ function removeDraftPlatform(id: string) {
   draft.value = { ...draft.value, platformIds: (draft.value.platformIds || []).filter(x => x !== id) }
 }
 
-// ── status ──
-const draftActive = computed(() => draft.value.status === 'Active')
-function toggleStatus() {
-  draft.value = { ...draft.value, status: draftActive.value ? 'Inactive' : 'Active' }
-}
-const statusHelper = computed(() =>
-  (isEditMode.value ? draftActive.value : product.value.status === 'Active')
-    ? 'Active — available for use'
-    : 'Inactive — hidden from use'
-)
-
 // ── scope ──
 const assignedScopePlatforms = computed(() =>
   (draft.value.platformIds || []).map(id => platformById(platforms.value, id)).filter((p): p is Platform => !!p)
 )
-const showScopeCard = computed(() => assignedScopePlatforms.value.length > 0)
+// variant products get no scope UI at all (per-variant pricing makes it moot)
+const showScopeCard = computed(() => assignedScopePlatforms.value.length > 0 && product.value.productType !== 'variant')
 const isPlatformScope = computed(() => isEditMode.value && scope.value !== 'default')
 const isViewPlatformScope = computed(() => !isEditMode.value && scope.value !== 'default')
 const scopeOv = computed<ScopeOverride>(() => draftOverrides.value[scope.value] || {})
@@ -321,7 +342,48 @@ function onNameReset() {
   draftOverrides.value = { ...draftOverrides.value, [sc]: o }
 }
 
-// ── variants (view) ──
+// ── stock / status / not for sale ──
+const stockValue = computed(() => draft.value.stock === 'out_stock' ? 'out_stock' : 'in_stock')
+const stockLabel = computed(() => stockValue.value === 'out_stock' ? 'Out of Stock' : 'In Stock')
+function stockDot(colour: string) {
+  return `width:8px;height:8px;border-radius:999px;flex-shrink:0;background:${colour};`
+}
+const stockDotStyle = computed(() => stockDot(stockValue.value === 'out_stock' ? '#dc2626' : '#00c16a'))
+const stockItems: [string, string, string][] = [
+  ['in_stock', 'In Stock', '#00c16a'],
+  ['out_stock', 'Out of Stock', '#dc2626']
+]
+// under a platform scope only Name and Price are overridable — Stock is global
+const stockLocked = computed(() => isPlatformScope.value)
+function onToggleStockDropdown() {
+  if (!stockLocked.value) toggleDropdown('stock')
+}
+function pickStock(value: string) {
+  draft.value = { ...draft.value, stock: value }
+  closeDropdown()
+}
+
+const draftActive = computed(() => draft.value.status === 'Active')
+function toggleStatus() {
+  draft.value = { ...draft.value, status: draftActive.value ? 'Inactive' : 'Active' }
+}
+const statusHelper = computed(() =>
+  (isEditMode.value ? draftActive.value : product.value.status === 'Active')
+    ? 'Active — available for use'
+    : 'Inactive — hidden from use'
+)
+const notForSaleHelper = computed(() =>
+  (isEditMode.value ? draft.value.notForSale : product.value.notForSale)
+    ? 'Not for sale — gift / not purchasable'
+    : 'Available for purchase'
+)
+const notForSaleBadge = computed(() => product.value.notForSale ? 'Not for sale' : 'For sale')
+const notForSaleBadgeStyle = computed(() => badgeStyle(product.value.notForSale ? 'Inactive' : 'Active'))
+function toggleNotForSale() {
+  draft.value = { ...draft.value, notForSale: !draft.value.notForSale }
+}
+
+// ── variants ──
 const isVariantProduct = computed(() => !!product.value.hasVariants)
 const isBundleProduct = computed(() => product.value.productType === 'bundle')
 const bundleComps = computed(() => (product.value.bundle && product.value.bundle.components) ? product.value.bundle.components : [])
@@ -331,6 +393,7 @@ const bundleComponentRows = computed(() =>
     products: c.products || []
   }))
 )
+const variantParentKey = computed(() => (isStored.value && product.value.id) ? product.value.id : 'demo')
 const viewVariantRows = computed(() =>
   (product.value.variants || []).map(v => ({
     name: v.name,
@@ -339,7 +402,8 @@ const viewVariantRows = computed(() =>
     priceLabel: (v.price !== '' && v.price != null) ? '¥' + Number(v.price).toFixed(2) : '—',
     stockLabel: (v.stock !== '' && v.stock != null) ? String(v.stock) : '—',
     statusLabel: v.active ? 'Active' : 'Inactive',
-    statusBadgeStyle: badgeStyle(v.active ? 'Active' : 'Inactive')
+    statusBadgeStyle: badgeStyle(v.active ? 'Active' : 'Inactive'),
+    detailTo: { path: '/products/variant-detail', query: { product: variantParentKey.value, variant: v.name } }
   }))
 )
 const variantCountLabel = computed(() => {
@@ -347,7 +411,7 @@ const variantCountLabel = computed(() => {
   return n === 1 ? '1 variant' : n + ' variants'
 })
 
-// ── variant attribute builder (edit) ──
+// ── variant attribute builder (edit; combinations regenerate only on Apply) ──
 const attributeTypeOptions = computed(() => attributeNames(attributeDefs.value))
 const editAttrRows = computed(() =>
   editAttributes.value.map((a) => {
@@ -365,31 +429,36 @@ const editAttrRows = computed(() =>
     }
   })
 )
-function updateEditAttr(id: string, fn: (a: EditAttr) => EditAttr, regen = true) {
-  const next = editAttributes.value.map(a => a.id === id ? fn(a) : a)
-  editAttributes.value = next
-  if (regen) editVariants.value = regenerateVariants(next, editVariants.value)
+function updateEditAttr(id: string, fn: (a: EditAttr) => EditAttr) {
+  editAttributes.value = editAttributes.value.map(a => a.id === id ? fn(a) : a)
 }
 function onAttrNameChange(id: string, name: string) {
-  updateEditAttr(id, a => ({ ...a, name, values: [] }), true)
+  updateEditAttr(id, a => ({ ...a, name, values: [] }))
 }
 function onAttrPickValue(id: string, e: Event) {
   const el = e.target as HTMLSelectElement
   const v = el.value
   el.value = ''
   if (!v) return
-  updateEditAttr(id, a => a.values.indexOf(v) === -1 ? { ...a, values: [...a.values, v] } : a, true)
+  updateEditAttr(id, a => a.values.indexOf(v) === -1 ? { ...a, values: [...a.values, v] } : a)
 }
 function removeAttrValue(id: string, value: string) {
-  updateEditAttr(id, a => ({ ...a, values: a.values.filter(val => val !== value) }), true)
+  updateEditAttr(id, a => ({ ...a, values: a.values.filter(val => val !== value) }))
 }
 function removeEditAttr(id: string) {
-  const next = editAttributes.value.filter(a => a.id !== id)
-  editAttributes.value = next
-  editVariants.value = regenerateVariants(next, editVariants.value)
+  editAttributes.value = editAttributes.value.filter(a => a.id !== id)
 }
 function addEditAttribute() {
   editAttributes.value = [...editAttributes.value, { id: 'ea' + Date.now(), name: '', values: [] }]
+}
+const editApplyDisabled = computed(() => {
+  const valid = editAttributes.value.some(a => a.name && a.name.trim() && a.values.length > 0)
+  if (!valid) return true
+  return attrKey(editAttributes.value) === editAppliedKey.value
+})
+function applyEditVariants() {
+  editVariants.value = regenerateVariants(editAttributes.value, editVariants.value)
+  editAppliedKey.value = attrKey(editAttributes.value)
 }
 function updateEditVariant(name: string, field: 'sku' | 'price' | 'stock' | 'image' | 'active', value: string | boolean) {
   editVariants.value = editVariants.value.map(v => v.name === name ? { ...v, [field]: value } : v)
@@ -413,125 +482,69 @@ function onVariantImageChange(e: Event) {
   reader.readAsDataURL(file)
 }
 
-// ── pricing ──
-const basePricing = computed<DemoPricing[]>(() => isStored.value ? [] : DEMO_PRICING.slice())
-const pricingRows = computed(() =>
-  basePricing.value.map(pr => ({
-    version: pr.version,
-    monthlyFeeLabel: '¥' + pr.monthlyFee.toFixed(2),
-    initialFeeLabel: pr.initialFee ? '¥' + pr.initialFee.toFixed(2) : '—',
-    status: pr.status,
-    statusBadgeStyle: badgeStyle(pr.status)
-  }))
-)
-const showPricingTable = computed(() => pricingRows.value.length > 0)
-const showPricingEmpty = computed(() => pricingRows.value.length === 0)
-
-const feeComponentsLocked = computed(() => scope.value !== 'default')
-const canAddEditComponent = computed(() => scope.value === 'default')
-const editInitialComponentRows = computed(() => {
-  const locked = scope.value !== 'default'
-  const chosen = editInitialComponents.value.map(c => c.feeId).filter(Boolean)
-  const ovAmts = locked ? (draftOverrides.value[scope.value]?.componentAmounts || {}) : null
-  return editInitialComponents.value.map((c, i) => {
-    const fee = feeById(fees.value, c.feeId)
-    const isBase = c.feeId === FEE_BASE_ID
-    const options = fees.value.filter(f => f.id === c.feeId || chosen.indexOf(f.id) === -1)
-    const amt = locked ? (ovAmts && ovAmts[c.feeId] !== undefined ? ovAmts[c.feeId] : '') : c.amount
-    return {
-      index: i,
-      feeId: c.feeId,
-      name: fee ? fee.name : 'Select component...',
-      locked: isBase,
-      selectable: !isBase,
-      selectDisabled: locked,
-      options: options.map(o => ({ id: o.id, name: o.name })),
-      amount: amt,
-      published: c.published,
-      publishLocked: isBase || locked,
-      publishTitle: isBase ? 'Base Price is always published' : (locked ? 'Publish is set in Default scope' : (c.published ? 'Published' : 'Unpublished')),
-      publishTrackStyle: switchTrackCss(!!c.published, isBase || locked),
-      publishKnobStyle: switchKnobCss(!!c.published),
-      canRemove: !isBase && !locked,
-      rowStyle: `display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #f1f5f9;${c.published ? '' : 'background:#fafafa;opacity:0.7;'}`
-    }
-  })
-})
-function onComponentSelect(i: number, feeId: string) {
-  editInitialComponents.value = editInitialComponents.value.map((x, idx) => idx === i ? { ...x, feeId } : x)
-}
-function onComponentAmount(i: number, value: string) {
-  if (scope.value === 'default') {
-    editInitialComponents.value = editInitialComponents.value.map((x, idx) => idx === i ? { ...x, amount: value } : x)
-    return
-  }
-  const sc = scope.value
-  const cur = { ...(draftOverrides.value[sc] || {}) }
-  const prev = cur.componentAmounts || {}
-  const fid = editInitialComponents.value[i]!.feeId
-  const amts: Record<string, string> = {}
-  Object.keys(prev).forEach((k) => {
-    if (k !== fid) amts[k] = prev[k]!
-  })
-  if (value !== '') amts[fid] = value
-  cur.componentAmounts = amts
-  draftOverrides.value = { ...draftOverrides.value, [sc]: cur }
-}
-function toggleComponentPublish(i: number) {
-  const c = editInitialComponents.value[i]
-  if (!c || c.feeId === FEE_BASE_ID || scope.value !== 'default') return
-  editInitialComponents.value = editInitialComponents.value.map((x, idx) => idx === i ? { ...x, published: !x.published } : x)
-}
-function addEditComponent() {
-  editInitialComponents.value = [...editInitialComponents.value, { feeId: '', published: true, amount: '' }]
-}
-function removeEditComponent(i: number) {
-  editInitialComponents.value = editInitialComponents.value.filter((_, idx) => idx !== i)
-}
-const editInitialTotalLabel = computed(() => {
-  const locked = scope.value !== 'default'
-  const ovAmts = locked ? (draftOverrides.value[scope.value]?.componentAmounts || {}) : null
-  const total = editInitialComponents.value.reduce((t, c) => {
-    if (!c.published || !c.feeId) return t
-    let a: string | number | undefined = c.amount
-    if (locked && ovAmts) a = (ovAmts[c.feeId] !== undefined && ovAmts[c.feeId] !== '') ? ovAmts[c.feeId] : c.amount
-    return t + (parseFloat(String(a)) || 0)
-  }, 0)
-  return '¥' + Math.round(total).toLocaleString('en-US')
-})
-
-// ── per-platform summary (view) ──
-const baseMonthlyForSummary = computed(() =>
-  isStored.value ? ((product.value.pricing && product.value.pricing[0]) ? product.value.pricing[0]!.monthly : '') : DEMO_PRICING[0]!.monthlyFee
-)
-function fmtY(v: string | number | undefined) {
-  return (v === '' || v == null) ? '—' : '¥' + Number(v).toFixed(2)
-}
-const platformSummaryRows = computed(() => {
-  const ovAll = product.value.overrides || {}
-  return (product.value.platformIds || []).map((id) => {
-    const pl = platformById(platforms.value, id)
-    if (!pl) return null
-    const o = ovAll[id] || {}
-    const nameOv = Object.prototype.hasOwnProperty.call(o, 'name')
-    const priceOv = Object.prototype.hasOwnProperty.call(o, 'priceMonthly' as keyof ScopeOverride)
-    const priceVal = priceOv ? (o as { priceMonthly?: string | number }).priceMonthly : baseMonthlyForSummary.value
-    return {
-      platform: pl.name,
-      name: nameOv ? o.name : product.value.name,
-      nameTag: nameOv ? 'Overridden' : 'Inherited',
-      nameTagStyle: nameOv ? BADGE_OVERRIDE : BADGE_INHERIT,
-      price: fmtY(priceVal),
-      priceTag: priceOv ? 'Overridden' : 'Inherited',
-      priceTagStyle: priceOv ? BADGE_OVERRIDE : BADGE_INHERIT
-    }
-  }).filter((r): r is NonNullable<typeof r> => !!r)
-})
-const showPlatformSummary = computed(() => isViewMode.value && platformSummaryRows.value.length > 0)
-
 const statusBadgeStyleProduct = computed(() => badgeStyle(product.value.status))
 const notesDisplay = computed(() => product.value.notes && product.value.notes.trim() ? product.value.notes : '—')
 const productTypeLabel = computed(() => product.value.productType ? product.value.productType.charAt(0).toUpperCase() + product.value.productType.slice(1) : '')
+const showLowerSpacer = computed(() => !isVariantProduct.value)
+
+// ── version history ──
+const AVATAR_COLORS = ['#00a155', '#2563eb', '#d97706', '#7c3aed', '#db2777']
+function toggleHistoryEntry(id: string) {
+  historyExpanded.value = { ...historyExpanded.value, [id]: !historyExpanded.value[id] }
+}
+const historyGroups = computed(() => {
+  const now = new Date()
+  const isSameDay = (a: Date, b: Date) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
+  const fmtDate = (d: Date) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+  const fmtTime = (d: Date) => d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+  const initialsOf = (n: string) => n.split(' ').map(x => x[0]).slice(0, 2).join('').toUpperCase()
+  const groups: { label: string, entries: HistoryRow[] }[] = []
+  historyEntries.value.forEach((entry, idx) => {
+    const d = new Date(entry.ts)
+    const label = isSameDay(d, now) ? 'TODAY' : fmtDate(d)
+    let g = groups.find(x => x.label === label)
+    if (!g) {
+      g = { label, entries: [] }
+      groups.push(g)
+    }
+    const expanded = !!historyExpanded.value[entry.id]
+    const changes = entry.changes || []
+    const isCurrent = idx === 0
+    g.entries.push({
+      id: entry.id,
+      actor: entry.actor,
+      initials: initialsOf(entry.actor),
+      avatarStyle: `width:30px;height:30px;border-radius:999px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff;background:${AVATAR_COLORS[idx % AVATAR_COLORS.length]};`,
+      timestamp: fmtDate(d) + ' ' + fmtTime(d),
+      isCurrent,
+      rowStyle: `padding:10px 18px;border-bottom:1px solid #f1f5f9;${isCurrent ? 'border-left:3px solid #00c16a;background:#fbfffd;' : 'border-left:3px solid transparent;'}`,
+      visibleChanges: expanded ? changes : changes.slice(0, 1),
+      hasMore: changes.length > 1,
+      toggleLabel: expanded ? 'Hide details' : `Show details (${changes.length})`,
+      toggleIcon: expanded ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'
+    })
+  })
+  return groups
+})
+function diffChanges(before: DetailProduct, after: DetailProduct): HistoryChange[] {
+  const out: HistoryChange[] = []
+  const push = (field: string, a: unknown, b: unknown) => {
+    const from = a == null ? '' : String(a)
+    const to = b == null ? '' : String(b)
+    if (from !== to) out.push({ field, from: from === '' ? '—' : from, to: to === '' ? '—' : to })
+  }
+  push('Name', before.name, after.name)
+  push('Notes', before.notes, after.notes)
+  push('Description', before.description, after.description)
+  push('Category', before.category, after.category)
+  push('Stock', before.stock === 'out_stock' ? 'Out of stock' : 'In stock', after.stock === 'out_stock' ? 'Out of stock' : 'In stock')
+  push('Status', before.status, after.status)
+  push('Not for sale', before.notForSale ? 'Yes' : 'No', after.notForSale ? 'Yes' : 'No')
+  const bp = (before.platformIds || []).join(', ')
+  const ap = (after.platformIds || []).join(', ')
+  if (bp !== ap) out.push({ field: 'Platforms', from: bp || '—', to: ap || '—' })
+  return out
+}
 
 // ── mode transitions ──
 function isDirty(): boolean {
@@ -541,13 +554,6 @@ function isDirty(): boolean {
 function onEditClick() {
   const seed = seedEditState(product.value)
   editSnapshot = JSON.stringify({ a: seed.attrs, v: seed.variants })
-  const baseV = isStored.value
-    ? ((product.value.pricing && product.value.pricing[0]) || {})
-    : { monthlyFee: 12.0, components: [{ feeId: 'fee_base', published: true, amount: '' }, { feeId: 'fee_tax', published: true, amount: '' }, { feeId: 'fee_shipping', published: true, amount: '' }] }
-  const srcComps = (baseV as PricingVersion).components
-  const seedComps: EditComp[] = (srcComps && srcComps.length)
-    ? srcComps.map(c => ({ feeId: c.feeId || 'fee_base', published: c.published === undefined ? true : !!c.published, amount: c.amount }))
-    : [{ feeId: 'fee_base', published: true, amount: '' }, { feeId: 'fee_tax', published: true, amount: '' }, { feeId: 'fee_shipping', published: true, amount: '' }]
   const d: DetailProduct = { ...product.value }
   if (!d.categoryId && d.category) {
     const c = categoryByName(categories.value, d.category)
@@ -556,10 +562,8 @@ function onEditClick() {
   draft.value = d
   editAttributes.value = seed.attrs
   editVariants.value = seed.variants
+  editAppliedKey.value = attrKey(seed.attrs)
   draftOverrides.value = JSON.parse(JSON.stringify(product.value.overrides || {}))
-  const bv = baseV as PricingVersion & { monthlyFee?: number }
-  editMonthly.value = bv.monthly != null ? bv.monthly : (bv.monthlyFee != null ? bv.monthlyFee : '')
-  editInitialComponents.value = seedComps
   errors.value = {}
   scope.value = 'default'
   mode.value = 'edit'
@@ -580,6 +584,7 @@ function onConfirmDiscard() {
   draft.value = { ...product.value }
   editAttributes.value = seed.attrs
   editVariants.value = seed.variants
+  editAppliedKey.value = attrKey(seed.attrs)
   cancelConfirmOpen.value = false
   errors.value = {}
   scope.value = 'default'
@@ -607,19 +612,8 @@ function onSaveClick() {
     errors.value = errs
     return
   }
+  // pricing is left exactly as stored — this screen no longer edits it
   const merged: DetailProduct = { ...d }
-  const comps = editInitialComponents.value.filter(c => c.feeId).map(c => ({ feeId: c.feeId, published: !!c.published, amount: c.amount }))
-  const initTotal = comps.reduce((t, c) => t + (c.published ? (parseFloat(c.amount) || 0) : 0), 0)
-  const existingV: PricingVersion = (d.pricing && d.pricing[0]) ? d.pricing[0]! : {}
-  const headVersion: PricingVersion = {
-    ...existingV,
-    version: existingV.version || 'v1',
-    monthly: editMonthly.value,
-    initial: initTotal,
-    components: comps,
-    active: existingV.active !== undefined ? existingV.active : true
-  }
-  merged.pricing = [headVersion, ...(d.pricing || []).slice(1)]
   merged.platformIds = d.platformIds || []
   merged.platformNames = platformNamesOf(d.platformIds || [])
   const cleanOv: Overrides = {}
@@ -640,6 +634,10 @@ function onSaveClick() {
     merged.variantCount = merged.variants.length
   }
   persist(merged)
+  const changes = diffChanges(product.value, merged)
+  if (changes.length) {
+    historyEntries.value = [{ id: 'h' + Date.now(), actor: 'Olivia Rhye', ts: Date.now(), changes }, ...historyEntries.value]
+  }
   product.value = merged
   draft.value = { ...merged }
   mode.value = 'view'
@@ -679,7 +677,10 @@ function onConfirmDelete() {
       <div>
         <div class="text-[13px] text-slate-500 mb-1">
           <NuxtLink to="/dashboard" class="text-green-600 no-underline hover:underline">
-            Products
+            Inventory
+          </NuxtLink>
+          / <NuxtLink to="/dashboard" class="text-green-600 no-underline hover:underline">
+            Product
           </NuxtLink>
           / <span class="text-slate-900 font-semibold">{{ product.name }}</span>
         </div>
@@ -692,6 +693,13 @@ function onConfirmDelete() {
       </div>
 
       <div v-if="isViewMode" class="flex gap-2.5">
+        <button
+          title="Version History"
+          class="border border-slate-200 bg-white text-slate-700 w-10 h-10 rounded-lg cursor-pointer inline-flex items-center justify-center hover:bg-slate-50 transition-colors"
+          @click="historyOpen = true"
+        >
+          <UIcon name="i-lucide-history" class="w-[17px] h-[17px]" />
+        </button>
         <button
           class="border border-red-200 bg-white text-red-600 text-sm font-semibold px-[18px] py-[9px] rounded-lg cursor-pointer inline-flex items-center gap-1.5 hover:bg-red-50 transition-colors"
           @click="onDeleteClick"
@@ -759,7 +767,7 @@ function onConfirmDelete() {
       <!-- ROW 1: Core identification + Settings -->
       <div class="flex flex-wrap gap-6 items-stretch">
         <!-- Core identification -->
-        <div class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 h-full min-w-0 grow-[999] shrink basis-[420px]">
+        <div class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 h-full min-w-0 grow-[999] shrink basis-[380px]">
           <h2 class="text-base font-bold text-slate-900 mt-0 mb-1">
             Core Identification
           </h2>
@@ -917,7 +925,7 @@ function onConfirmDelete() {
                       :key="opt.id"
                       type="button"
                       :style="opt.style"
-                      @click="opt.header ? null : pickCategory(opt.id)"
+                      @click="pickCategory(opt.id)"
                     >
                       <span>{{ opt.name }}</span>
                       <UIcon v-if="opt.selected" name="i-lucide-check" class="w-[15px] h-[15px] text-green-600" />
@@ -989,6 +997,49 @@ function onConfirmDelete() {
             </template>
           </div>
 
+          <!-- stock -->
+          <div v-if="isViewMode" class="mb-4">
+            <span class="static-label">Stock</span>
+            <div class="static-value inline-flex items-center gap-2">
+              <span :style="stockDotStyle" />{{ stockLabel }}
+            </div>
+          </div>
+          <div
+            v-else
+            class="mb-5"
+            :style="stockLocked ? 'opacity:0.6;pointer-events:none;' : ''"
+          >
+            <label class="field-label">Stock</label>
+            <div class="relative">
+              <button
+                type="button"
+                :disabled="stockLocked"
+                :style="ddTrigger(openDropdown === 'stock') + (stockLocked ? 'cursor:not-allowed;' : '')"
+                @click="onToggleStockDropdown"
+              >
+                <span class="inline-flex items-center gap-2">
+                  <span :style="stockDotStyle" />{{ stockLabel }}
+                </span>
+                <span :style="ddChevron(openDropdown === 'stock')"><UIcon name="i-lucide-chevron-down" class="w-4 h-4" /></span>
+              </button>
+              <template v-if="openDropdown === 'stock'">
+                <div class="fixed inset-0 z-40" @click="closeDropdown" />
+                <div class="absolute top-[calc(100%+4px)] left-0 right-0 z-50 bg-white border border-slate-200 rounded-lg shadow-[0_10px_30px_rgba(0,0,0,0.14)] p-1">
+                  <button
+                    v-for="opt in stockItems"
+                    :key="opt[0]"
+                    type="button"
+                    :style="ddOption(stockValue === opt[0])"
+                    @click="pickStock(opt[0])"
+                  >
+                    <span class="inline-flex items-center gap-2"><span :style="stockDot(opt[2])" />{{ opt[1] }}</span>
+                    <UIcon v-if="stockValue === opt[0]" name="i-lucide-check" class="w-[15px] h-[15px] text-green-600" />
+                  </button>
+                </div>
+              </template>
+            </div>
+          </div>
+
           <!-- status -->
           <div class="flex items-center justify-between pt-4 border-t border-slate-100">
             <div>
@@ -1004,10 +1055,26 @@ function onConfirmDelete() {
               <span :style="knobStyle(draftActive)" />
             </button>
           </div>
+
+          <!-- not for sale -->
+          <div class="flex items-center justify-between pt-4 mt-4 border-t border-slate-100">
+            <div>
+              <div class="text-sm font-semibold text-slate-900">
+                Not for sale
+              </div>
+              <div class="text-[13px] text-slate-500 mt-0.5">
+                {{ notForSaleHelper }}
+              </div>
+            </div>
+            <span v-if="isViewMode" :style="notForSaleBadgeStyle">{{ notForSaleBadge }}</span>
+            <button v-else :style="trackStyle(!!draft.notForSale)" @click="toggleNotForSale">
+              <span :style="knobStyle(!!draft.notForSale)" />
+            </button>
+          </div>
         </div>
       </div>
 
-      <!-- ROW 2: variants / bundle + pricing -->
+      <!-- ROW 2: variants / bundle -->
       <div class="flex flex-wrap gap-6">
         <div class="grow-[999] shrink basis-[420px] min-w-0 flex flex-col gap-6">
           <!-- VARIANTS -->
@@ -1095,11 +1162,20 @@ function onConfirmDelete() {
               </div>
 
               <button
-                class="inline-flex items-center gap-1.5 border border-dashed border-green-500 bg-emerald-50 text-green-600 text-[13px] font-semibold px-4 py-[9px] rounded-lg cursor-pointer mb-7"
+                class="inline-flex items-center gap-1.5 border border-dashed border-green-500 bg-emerald-50 text-green-600 text-[13px] font-semibold px-4 py-[9px] rounded-lg cursor-pointer mb-7 mr-2.5"
                 @click="addEditAttribute"
               >
                 <UIcon name="i-lucide-plus" class="w-3.5 h-3.5" />
                 Add Attribute
+              </button>
+              <button
+                :disabled="editApplyDisabled"
+                class="inline-flex items-center gap-1.5 border-none text-[13px] font-bold px-[18px] py-[9px] rounded-lg mb-7 transition-colors"
+                :class="editApplyDisabled ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-green-500 text-white cursor-pointer shadow-sm hover:bg-green-600'"
+                @click="applyEditVariants"
+              >
+                <UIcon name="i-lucide-check" class="w-3.5 h-3.5" />
+                Apply
               </button>
 
               <div class="flex items-center justify-between mb-3.5">
@@ -1216,6 +1292,9 @@ function onConfirmDelete() {
                         <th class="text-left text-xs font-bold text-slate-500 uppercase tracking-[0.03em] px-4 py-[11px] w-[100px]">
                           Status
                         </th>
+                        <th class="text-right text-xs font-bold text-slate-500 uppercase tracking-[0.03em] px-4 py-[11px] w-[120px]">
+                          Action
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1243,6 +1322,14 @@ function onConfirmDelete() {
                         </td>
                         <td class="px-4 py-[11px] whitespace-nowrap">
                           <span :style="vv.statusBadgeStyle">{{ vv.statusLabel }}</span>
+                        </td>
+                        <td class="px-4 py-[11px] text-right whitespace-nowrap">
+                          <NuxtLink
+                            :to="vv.detailTo"
+                            class="btn-icon-hover inline-flex items-center gap-1.5 border border-slate-200 bg-white text-slate-700 text-[13px] font-semibold px-3 py-1.5 rounded-lg no-underline"
+                          >
+                            <UIcon name="i-lucide-eye" class="w-3.5 h-3.5" /> View Detail
+                          </NuxtLink>
                         </td>
                       </tr>
                     </tbody>
@@ -1299,229 +1386,12 @@ function onConfirmDelete() {
               </div>
             </div>
           </div>
-
-          <!-- PRICING -->
-          <div class="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
-            <div class="flex items-center justify-between mb-1">
-              <h2 class="text-base font-bold text-slate-900 m-0">
-                Pricing
-              </h2>
-            </div>
-            <p class="text-[13px] text-slate-500 mt-0 mb-4">
-              Pricing versions are managed independently of the page edit mode.
-            </p>
-
-            <div v-if="isEditMode">
-              <div class="mb-5">
-                <label class="field-label">Monthly Fee</label>
-                <div class="relative">
-                  <span class="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">¥</span>
-                  <input
-                    class="field-input pl-[26px]"
-                    type="number"
-                    :value="editMonthly"
-                    placeholder="0.00"
-                    @input="editMonthly = ($event.target as HTMLInputElement).value"
-                  >
-                </div>
-              </div>
-              <div class="mb-1">
-                <div class="flex items-baseline gap-2 mb-2">
-                  <label class="field-label mb-0">Initial Fee</label>
-                  <span class="text-xs text-slate-400">sum of published components below.</span>
-                </div>
-                <div
-                  v-if="feeComponentsLocked"
-                  class="flex items-center gap-2 mb-2.5 text-[12.5px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2"
-                >
-                  <UIcon name="i-lucide-lock" class="w-[13px] h-[13px] flex-shrink-0" />
-                  <span>Components and publish states are set in Default scope. Override amounts for this platform here.</span>
-                </div>
-                <div class="border border-slate-200 rounded-[10px] overflow-hidden">
-                  <div class="flex items-center gap-2.5 px-3 py-2.5 bg-slate-50 border-b border-slate-200">
-                    <span class="flex-1 min-w-0 text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Component</span>
-                    <span class="w-[140px] flex-shrink-0 text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Amount</span>
-                    <span class="w-[90px] flex-shrink-0 text-center text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Published</span>
-                    <span class="w-[38px] flex-shrink-0" />
-                  </div>
-                  <div v-for="c in editInitialComponentRows" :key="c.index" :style="c.rowStyle">
-                    <div class="flex-1 min-w-0">
-                      <div
-                        v-if="c.locked"
-                        class="flex items-center gap-2 text-sm font-semibold text-slate-900"
-                      >
-                        {{ c.name }} <span class="text-[11px] font-semibold px-2 py-px rounded-full bg-blue-50 text-blue-600 border border-blue-200">Base</span>
-                      </div>
-                      <div v-else class="select-wrap">
-                        <select
-                          class="field-input"
-                          :value="c.feeId"
-                          :disabled="c.selectDisabled"
-                          @change="onComponentSelect(c.index, ($event.target as HTMLSelectElement).value)"
-                        >
-                          <option value="">
-                            Select component...
-                          </option>
-                          <option v-for="opt in c.options" :key="opt.id" :value="opt.id">
-                            {{ opt.name }}
-                          </option>
-                        </select>
-                      </div>
-                    </div>
-                    <div class="relative w-[140px] flex-shrink-0">
-                      <span class="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">¥</span>
-                      <input
-                        class="field-input pl-[26px]"
-                        type="number"
-                        :value="c.amount"
-                        placeholder="0"
-                        @input="onComponentAmount(c.index, ($event.target as HTMLInputElement).value)"
-                      >
-                    </div>
-                    <div class="w-[90px] flex-shrink-0 flex justify-center">
-                      <button
-                        :disabled="c.publishLocked"
-                        :title="c.publishTitle"
-                        :style="c.publishTrackStyle"
-                        @click="toggleComponentPublish(c.index)"
-                      >
-                        <span :style="c.publishKnobStyle" />
-                      </button>
-                    </div>
-                    <div class="w-[38px] flex-shrink-0">
-                      <button
-                        v-if="c.canRemove"
-                        title="Remove component"
-                        class="btn-icon-hover border border-slate-200 bg-white text-red-500 w-[38px] h-[38px] rounded-lg cursor-pointer flex items-center justify-center"
-                        @click="removeEditComponent(c.index)"
-                      >
-                        <UIcon name="i-lucide-trash-2" class="w-4 h-4" />
-                      </button>
-                      <span
-                        v-else-if="c.locked"
-                        class="w-[38px] h-[38px] inline-flex items-center justify-center text-slate-300"
-                      >
-                        <UIcon name="i-lucide-lock" class="w-3.5 h-3.5" />
-                      </span>
-                    </div>
-                  </div>
-                  <div v-if="canAddEditComponent" class="px-3 py-2.5 border-b border-slate-100">
-                    <button
-                      class="inline-flex items-center gap-1.5 border border-dashed border-green-500 bg-emerald-50 text-green-600 text-[13px] font-semibold px-3.5 py-2 rounded-lg cursor-pointer"
-                      @click="addEditComponent"
-                    >
-                      <UIcon name="i-lucide-plus" class="w-3.5 h-3.5" /> Add component
-                    </button>
-                  </div>
-                  <div class="flex items-center justify-between px-3.5 py-3 bg-slate-50">
-                    <span class="text-sm font-bold text-slate-900">Initial Fee (Total)</span>
-                    <span class="text-base font-bold text-slate-900">{{ editInitialTotalLabel }}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div v-if="showPricingTable" class="border border-slate-200 rounded-[10px] overflow-hidden">
-              <div class="overflow-x-auto">
-                <table class="w-full border-collapse min-w-[560px]">
-                  <thead>
-                    <tr class="bg-slate-50 border-b border-slate-200">
-                      <th class="text-left text-xs font-bold text-slate-500 uppercase tracking-[0.03em] px-4 py-3">
-                        Price Version
-                      </th>
-                      <th class="text-left text-xs font-bold text-slate-500 uppercase tracking-[0.03em] px-3 py-3">
-                        Monthly Fee
-                      </th>
-                      <th class="text-left text-xs font-bold text-slate-500 uppercase tracking-[0.03em] px-3 py-3">
-                        Initial Fee
-                      </th>
-                      <th class="text-left text-xs font-bold text-slate-500 uppercase tracking-[0.03em] px-3 py-3">
-                        Status
-                      </th>
-                      <th v-if="isEditMode" class="text-left text-xs font-bold text-slate-500 uppercase tracking-[0.03em] px-4 py-3 w-[90px]">
-                        Action
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="row in pricingRows" :key="row.version" class="border-b border-slate-100">
-                      <td class="px-4 py-3 text-sm font-semibold text-slate-900">
-                        {{ row.version }}
-                      </td>
-                      <td class="px-3 py-3 text-sm text-slate-700">
-                        {{ row.monthlyFeeLabel }}
-                      </td>
-                      <td class="px-3 py-3 text-sm text-slate-700">
-                        {{ row.initialFeeLabel }}
-                      </td>
-                      <td class="px-3 py-3">
-                        <span :style="row.statusBadgeStyle">{{ row.status }}</span>
-                      </td>
-                      <td v-if="isEditMode" class="px-4 py-3">
-                        <button class="btn-icon-hover border border-slate-200 bg-white text-slate-700 w-8 h-8 rounded-lg cursor-pointer inline-flex items-center justify-center">
-                          <UIcon name="i-lucide-pencil" class="w-3.5 h-3.5" />
-                        </button>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-            <div
-              v-if="showPricingEmpty"
-              class="border-[1.5px] border-dashed border-slate-200 rounded-[10px] px-6 py-7 text-center text-[13px] text-slate-400"
-            >
-              No pricing versions yet.
-            </div>
-          </div>
-
-          <!-- PER-PLATFORM SUMMARY -->
-          <div v-if="showPlatformSummary" class="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
-            <h2 class="text-base font-bold text-slate-900 mt-0 mb-1">
-              Per-platform values
-            </h2>
-            <p class="text-[13px] text-slate-500 mt-0 mb-4">
-              Effective name and price on each assigned platform.
-            </p>
-            <div class="border border-slate-200 rounded-[10px] overflow-hidden">
-              <div class="overflow-x-auto">
-                <table class="w-full border-collapse min-w-[560px]">
-                  <thead>
-                    <tr class="bg-slate-50 border-b border-slate-200">
-                      <th class="text-left text-xs font-bold text-slate-500 uppercase tracking-[0.03em] px-4 py-3">
-                        Platform
-                      </th>
-                      <th class="text-left text-xs font-bold text-slate-500 uppercase tracking-[0.03em] px-3 py-3">
-                        Name
-                      </th>
-                      <th class="text-left text-xs font-bold text-slate-500 uppercase tracking-[0.03em] px-3 py-3">
-                        Monthly Price
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="row in platformSummaryRows" :key="row.platform" class="border-b border-slate-100">
-                      <td class="px-4 py-3 text-sm font-semibold text-slate-900 whitespace-nowrap">
-                        <span class="inline-flex items-center gap-2"><UIcon name="i-lucide-globe" class="w-3.5 h-3.5 text-slate-400" />{{ row.platform }}</span>
-                      </td>
-                      <td class="px-3 py-3 text-sm text-slate-700">
-                        <div class="flex items-center gap-2 flex-wrap">
-                          {{ row.name }}<span :style="row.nameTagStyle">{{ row.nameTag }}</span>
-                        </div>
-                      </td>
-                      <td class="px-3 py-3 text-sm text-slate-700">
-                        <div class="flex items-center gap-2 flex-wrap">
-                          {{ row.price }}<span :style="row.priceTagStyle">{{ row.priceTag }}</span>
-                        </div>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
         </div>
-        <div class="grow shrink basis-[320px]" aria-hidden="true" />
+        <div
+          v-if="showLowerSpacer"
+          class="grow shrink basis-[320px]"
+          aria-hidden="true"
+        />
       </div>
     </div>
 
@@ -1596,6 +1466,72 @@ function onConfirmDelete() {
       <UIcon name="i-lucide-circle-check-big" class="w-4 h-4 text-green-500" />
       {{ toastMessage }}
     </div>
+
+    <!-- version history drawer -->
+    <template v-if="historyOpen">
+      <div
+        class="fixed inset-0 bg-slate-900/35 backdrop-blur-[2px] z-[120]"
+        @click="historyOpen = false"
+      />
+      <div class="drawer fixed top-0 right-0 bottom-0 w-[340px] max-w-[92vw] bg-white z-[121] shadow-[-8px_0_30px_rgba(0,0,0,0.18)] flex flex-col">
+        <div class="flex items-center justify-between gap-3 px-[18px] py-3.5 border-b border-slate-200 flex-shrink-0">
+          <div class="flex items-center gap-2">
+            <UIcon name="i-lucide-history" class="w-4 h-4 text-green-600" />
+            <h2 class="text-[15px] font-bold text-slate-900 m-0">
+              Version History
+            </h2>
+          </div>
+          <button
+            class="btn-icon-hover border-none bg-transparent text-slate-500 w-[30px] h-[30px] rounded-lg cursor-pointer inline-flex items-center justify-center"
+            @click="historyOpen = false"
+          >
+            <UIcon name="i-lucide-x" class="w-[17px] h-[17px]" />
+          </button>
+        </div>
+        <div class="flex-1 overflow-y-auto pt-0.5 pb-4">
+          <template v-for="g in historyGroups" :key="g.label">
+            <div class="px-[18px] pt-3 pb-1 text-[10px] font-bold tracking-[0.05em] text-slate-400 uppercase">
+              {{ g.label }}
+            </div>
+            <div v-for="e in g.entries" :key="e.id" :style="e.rowStyle">
+              <div class="flex items-start gap-2.5">
+                <div :style="e.avatarStyle">
+                  {{ e.initials }}
+                </div>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-sm font-semibold text-slate-900">{{ e.actor }}</span>
+                    <span
+                      v-if="e.isCurrent"
+                      class="text-[11px] font-bold text-green-600 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-px"
+                    >Current version</span>
+                  </div>
+                  <div class="text-[11px] text-slate-400 mt-px">
+                    {{ e.timestamp }}
+                  </div>
+                  <div class="mt-1.5 flex flex-col gap-1">
+                    <div v-for="(c, idx) in e.visibleChanges" :key="idx" class="text-[13px] text-slate-700">
+                      <span class="font-semibold">{{ c.field }}:</span>
+                      <span class="text-slate-400 line-through">{{ c.from }}</span>
+                      <UIcon name="i-lucide-arrow-right" class="w-[11px] h-[11px] inline align-middle text-slate-300 mx-0.5" />
+                      <span class="text-slate-900 font-medium">{{ c.to }}</span>
+                    </div>
+                  </div>
+                  <button
+                    v-if="e.hasMore"
+                    class="border-none bg-transparent text-green-600 text-xs font-semibold cursor-pointer pt-1.5 px-0 pb-0 inline-flex items-center gap-1"
+                    @click="toggleHistoryEntry(e.id)"
+                  >
+                    {{ e.toggleLabel }}
+                    <UIcon :name="e.toggleIcon" class="w-3 h-3" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -1668,5 +1604,18 @@ select.field-input {
 }
 .btn-icon-hover:hover {
   background: #f1f5f9;
+}
+.drawer {
+  animation: drawerIn 240ms ease;
+}
+@keyframes drawerIn {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
 }
 </style>

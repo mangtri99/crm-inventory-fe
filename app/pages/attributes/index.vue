@@ -3,17 +3,8 @@ import type { AttributeDef } from '~/types'
 
 useHead({ title: 'Attributes — Vertex' })
 
-interface ModalState {
-  id: string | null
-  name: string
-  value: string
-  chips: string[]
-  error: string
-}
-
 // ── state (mirrors the design's DCLogic state) ──
 const attrs = ref<AttributeDef[]>([])
-const modal = ref<ModalState | null>(null)
 const deleteTarget = ref<AttributeDef | null>(null)
 const toast = ref<string | null>(null)
 
@@ -34,57 +25,12 @@ function showToast(msg: string) {
   }, 2800)
 }
 
-// ── create / edit ──
+// ── create / edit (a dedicated screen, not an inline modal) ──
 function onCreate() {
-  modal.value = { id: null, name: '', value: '', chips: [], error: '' }
+  return navigateTo('/attributes/create')
 }
 function onEdit(a: AttributeDef) {
-  modal.value = { id: a.id, name: a.name, value: '', chips: a.values.slice(), error: '' }
-}
-function commitDraftValue() {
-  if (!modal.value) return
-  const v = (modal.value.value || '').trim()
-  if (!v || modal.value.chips.indexOf(v) !== -1) {
-    modal.value = { ...modal.value, value: '' }
-    return
-  }
-  modal.value = { ...modal.value, chips: [...modal.value.chips, v], value: '' }
-}
-function removeChip(v: string) {
-  if (!modal.value) return
-  modal.value = { ...modal.value, chips: modal.value.chips.filter(x => x !== v) }
-}
-function onValueKeyDown(e: KeyboardEvent) {
-  if (e.key === 'Enter' || e.key === ',') {
-    e.preventDefault()
-    commitDraftValue()
-  }
-}
-function saveModal() {
-  const m = modal.value
-  if (!m) return
-  const name = (m.name || '').trim()
-  if (!name) {
-    modal.value = { ...m, error: 'Attribute name is required.' }
-    return
-  }
-  const dup = attrs.value.some(a => a.name.toLowerCase() === name.toLowerCase() && a.id !== m.id)
-  if (dup) {
-    modal.value = { ...m, error: 'An attribute with this name already exists.' }
-    return
-  }
-  // fold any half-typed value into the chips
-  const pending = (m.value || '').trim()
-  const chips = m.chips.slice()
-  if (pending && chips.indexOf(pending) === -1) chips.push(pending)
-
-  const next = m.id
-    ? attrs.value.map(a => a.id === m.id ? { ...a, name, values: chips } : a)
-    : [...attrs.value, { id: 'attr_' + Date.now(), name, values: chips }]
-  saveAttributeDefs(next)
-  attrs.value = next
-  modal.value = null
-  showToast(m.id ? 'Attribute updated' : 'Attribute created')
+  return navigateTo({ path: '/attributes/create', query: { id: a.id } })
 }
 
 // ── delete ──
@@ -122,7 +68,12 @@ const deleteCancelLabel = computed(() => deleteBlocked.value ? 'Close' : 'Cancel
     <div class="text-[13px] text-slate-500 mb-3.5">
       <NuxtLink to="/dashboard" class="text-green-600 no-underline hover:text-green-700">
         Inventory
-      </NuxtLink> <span class="text-slate-300">/</span> <span class="text-slate-900 font-semibold">Attributes</span>
+      </NuxtLink> <span class="text-slate-300">/</span>
+      <NuxtLink to="/dashboard" class="text-green-600 no-underline hover:text-green-700">
+        Product
+      </NuxtLink> <span class="text-slate-300">/</span>
+      <span class="text-green-600">Configuration</span> <span class="text-slate-300">/</span>
+      <span class="text-slate-900 font-semibold">Attributes</span>
     </div>
 
     <div class="flex items-start justify-between gap-4 mb-6 flex-wrap">
@@ -150,6 +101,9 @@ const deleteCancelLabel = computed(() => deleteBlocked.value ? 'Close' : 'Cancel
               <th class="text-left text-sm font-bold text-slate-500 uppercase tracking-[0.03em] px-5 py-[13px] w-[220px]">
                 Attribute Name
               </th>
+              <th class="text-left text-sm font-bold text-slate-500 uppercase tracking-[0.03em] px-3 py-[13px] w-[130px]">
+                Type
+              </th>
               <th class="text-left text-sm font-bold text-slate-500 uppercase tracking-[0.03em] px-3 py-[13px]">
                 Values
               </th>
@@ -167,6 +121,9 @@ const deleteCancelLabel = computed(() => deleteBlocked.value ? 'Close' : 'Cancel
                   </div>
                   <span class="text-base font-semibold text-slate-900">{{ a.name }}</span>
                 </div>
+              </td>
+              <td class="px-3 py-3.5">
+                <span class="text-sm text-slate-700">{{ a.type || 'Select' }}</span>
               </td>
               <td class="px-3 py-3.5">
                 <div v-if="a.values.length" class="flex flex-wrap gap-[5px]">
@@ -212,85 +169,6 @@ const deleteCancelLabel = computed(() => deleteBlocked.value ? 'Close' : 'Cancel
         </div>
         <div class="text-[15px] text-slate-400 max-w-[340px]">
           Create an attribute to reuse it across product variants.
-        </div>
-      </div>
-    </div>
-
-    <!-- create / edit modal -->
-    <div
-      v-if="modal"
-      class="fixed inset-0 bg-slate-900/45 backdrop-blur-[2px] flex items-center justify-center z-[200] p-5"
-    >
-      <div class="bg-white rounded-[14px] w-[520px] max-w-[94vw] shadow-[0_20px_60px_rgba(0,0,0,0.25)]">
-        <div class="flex items-center justify-between px-6 py-5 border-b border-slate-100">
-          <h3 class="text-[17px] font-bold text-slate-900 m-0">
-            {{ modal.id ? 'Edit Attribute' : 'Create Attribute' }}
-          </h3>
-          <button
-            class="btn-icon-hover border-none bg-transparent text-slate-500 w-8 h-8 rounded-lg cursor-pointer flex items-center justify-center"
-            @click="modal = null"
-          >
-            <UIcon name="i-lucide-x" class="w-[18px] h-[18px]" />
-          </button>
-        </div>
-        <div class="p-6">
-          <div class="mb-[18px]">
-            <label class="field-label">Attribute Name <span class="text-red-600">*</span></label>
-            <input
-              class="field-input"
-              type="text"
-              :value="modal.name"
-              placeholder="e.g. Duration"
-              @input="modal.name = ($event.target as HTMLInputElement).value; modal.error = ''"
-            >
-            <div v-if="modal.error" class="text-[13px] text-red-600 mt-1.5">
-              {{ modal.error }}
-            </div>
-          </div>
-          <div>
-            <label class="field-label">Values</label>
-            <div class="flex flex-wrap gap-1.5 items-center border border-slate-200 rounded-lg px-2.5 py-2 bg-white min-h-[44px]">
-              <span
-                v-for="chip in modal.chips"
-                :key="chip"
-                class="inline-flex basis-auto grow-0 shrink-0 items-center gap-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full py-[3px] pr-1.5 pl-2.5 text-[13px] font-medium"
-              >
-                {{ chip }}
-                <button
-                  class="border-none bg-transparent cursor-pointer text-emerald-700 flex items-center p-0.5 rounded-full"
-                  @click="removeChip(chip)"
-                >
-                  <UIcon name="i-lucide-x" class="w-3 h-3" />
-                </button>
-              </span>
-              <input
-                type="text"
-                :value="modal.value"
-                placeholder="Type a value, press Enter"
-                size="1"
-                class="border-none outline-none text-sm grow shrink basis-[120px] min-w-[120px] p-[5px] bg-transparent"
-                @input="modal.value = ($event.target as HTMLInputElement).value"
-                @keydown="onValueKeyDown"
-              >
-            </div>
-            <div class="text-[12.5px] text-slate-400 mt-1.5">
-              Press Enter or comma to add each value.
-            </div>
-          </div>
-        </div>
-        <div class="flex justify-end gap-2.5 px-6 py-4 border-t border-slate-100">
-          <button
-            class="border border-slate-200 bg-white text-slate-700 text-[15px] font-semibold px-[18px] py-[9px] rounded-lg cursor-pointer"
-            @click="modal = null"
-          >
-            Cancel
-          </button>
-          <button
-            class="border-none bg-green-500 text-white text-[15px] font-bold px-5 py-[9px] rounded-lg cursor-pointer"
-            @click="saveModal"
-          >
-            Save
-          </button>
         </div>
       </div>
     </div>

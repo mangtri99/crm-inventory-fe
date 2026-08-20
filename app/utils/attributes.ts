@@ -19,7 +19,7 @@ const SEED: AttributeDef[] = [
 ]
 
 function clone(a: AttributeDef): AttributeDef {
-  return { id: a.id, name: a.name, values: (a.values || []).slice() }
+  return { id: a.id, name: a.name, type: a.type, values: (a.values || []).slice() }
 }
 
 export function loadAttributeDefs(): AttributeDef[] {

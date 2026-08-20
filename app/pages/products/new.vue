@@ -52,7 +52,13 @@ const form = reactive({
 const productType = ref<ProductType>('single')
 const isSubscription = ref(true)
 const published = ref(false)
+const notForSale = ref(false)
 const openDropdown = ref<string | null>(null)
+
+// inline edit affordance on Monthly Fee: focusing the field snapshots the
+// current value so Cancel can revert it.
+const pricingEditing = ref(false)
+const pricingSnapshot = ref('')
 
 const attributes = ref<AttrRow[]>([])
 const variants = ref<VariantRow[]>([])
@@ -62,7 +68,6 @@ const componentModal = ref<ComponentModalState | null>(null)
 const saveConfirmOpen = ref(false)
 const cancelConfirmOpen = ref(false)
 const savedToast = ref(false)
-const savedToastMsg = ref('Product created successfully')
 const saveError = ref<string[] | null>(null)
 const formDirty = ref(false)
 // snapshot of the attributes last "applied" — variant combinations only
@@ -96,10 +101,14 @@ onBeforeUnmount(() => {
   if (toastTimer !== null) clearTimeout(toastTimer)
 })
 
-// any user edit marks the form dirty (guards the Cancel confirm)
+// any user edit marks the form dirty (guards the Cancel confirm) and clears a
+// stale "missing fields" banner (the design clears it inside every setter)
 watch(
-  [() => form, productType, isSubscription, published, attributes, variants, bundleComponents],
-  () => { formDirty.value = true },
+  [() => form, productType, isSubscription, published, notForSale, attributes, variants, bundleComponents],
+  () => {
+    formDirty.value = true
+    saveError.value = null
+  },
   { deep: true }
 )
 
@@ -188,7 +197,8 @@ const categoryDisplay = computed(() =>
 const categoryFlat = computed(() =>
   flattenCategories(categories.value).map((o) => {
     const selected = o.id === form.categoryId
-    const style = `width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;border:none;border-radius:6px;background:${selected ? '#ecfdf5' : 'transparent'};padding:8px 10px;padding-left:${o.depth ? (10 + o.depth * 16) : 10}px;font-size:14px;color:${selected ? '#047857' : '#334155'};font-weight:${selected ? 600 : 400};cursor:pointer;`
+    // parent rows read bolder than leaves, but every row stays selectable
+    const style = `width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;border:none;border-radius:6px;background:${selected ? '#ecfdf5' : 'transparent'};padding:8px 10px;padding-left:${o.depth ? (10 + o.depth * 16) : 10}px;font-size:14px;color:${selected ? '#047857' : '#0f172a'};font-weight:${selected ? 600 : (o.header ? 600 : 400)};cursor:pointer;`
     return { id: o.id, name: o.name, selected, style }
   })
 )
@@ -425,7 +435,7 @@ const initialTotal = computed(() =>
 const initialTotalLabel = computed(() => '¥' + Math.round(initialTotal.value).toLocaleString('en-US'))
 const initialComponentRows = computed(() => {
   const chosen = form.initialComponents.map(c => c.feeId).filter(Boolean)
-  return form.initialComponents.map((c, i) => {
+  const mapped = form.initialComponents.map((c, i) => {
     const fee = feeById(fees.value, c.feeId)
     const isBase = c.feeId === FEE_BASE_ID
     const options = fees.value.filter(f => f.id === c.feeId || chosen.indexOf(f.id) === -1)
@@ -434,6 +444,7 @@ const initialComponentRows = computed(() => {
       feeId: c.feeId,
       name: fee ? fee.name : 'Select component...',
       isBase,
+      showAddBefore: false,
       selectable: !isBase,
       options: options.map(o => ({ id: o.id, name: o.name })),
       amount: c.amount,
@@ -444,6 +455,13 @@ const initialComponentRows = computed(() => {
       rowStyle: `display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #f1f5f9;${c.published ? '' : 'background:#fafafa;opacity:0.7;'}`
     }
   })
+  // the locked Base Price row sinks to the bottom of the table, with the
+  // "Add component" row rendered just above it. `index` stays the index into
+  // `form.initialComponents`, so the handlers are unaffected by the reorder.
+  const nonBase = mapped.filter(r => !r.isBase)
+  const baseRows = mapped.filter(r => r.isBase)
+  if (baseRows[0]) baseRows[0].showAddBefore = true
+  return nonBase.concat(baseRows)
 })
 function setComponentFeeId(i: number, feeId: string) {
   form.initialComponents = form.initialComponents.map((c, idx) => idx === i ? { ...c, feeId } : c)
@@ -469,29 +487,52 @@ function removeInitialComponent(i: number) {
 function toggleSubscription() {
   isSubscription.value = !isSubscription.value
 }
+function onPricingFocus() {
+  if (pricingEditing.value) return
+  pricingSnapshot.value = form.priceMonthly
+  pricingEditing.value = true
+}
+function onPricingSave() {
+  pricingEditing.value = false
+}
+function onPricingCancel() {
+  form.priceMonthly = pricingSnapshot.value
+  pricingEditing.value = false
+}
 const subscriptionHelper = computed(() =>
   isSubscription.value ? 'Recurring — customers pay a monthly fee.' : 'One-time purchase — no monthly fee.'
 )
 // Variant products price per row, so the product-level price block is hidden.
 const showProductPrice = computed(() => productType.value !== 'variant')
 const pricePerVariant = computed(() => productType.value === 'variant')
+// "Not for sale" dims the whole pricing body (the banner above it stays lit)
+const pricingBodyStyle = computed(() => notForSale.value ? 'opacity:0.55;pointer-events:none;' : '')
 
 // ── status ──
 function togglePublished() {
   published.value = !published.value
 }
 const statusHelper = computed(() => published.value ? 'Active — available for use' : 'Inactive — hidden from use')
+function toggleNotForSale() {
+  notForSale.value = !notForSale.value
+}
+const notForSaleHelper = computed(() =>
+  notForSale.value ? 'Not for sale — gift / not purchasable' : 'Available for purchase'
+)
 
 // ── save / cancel ──
 function validate(): string[] {
   const f = form
   const missing: string[] = []
-  if (!f.name || !f.name.trim()) missing.push('Product Name')
-  if (!f.sku || !f.sku.trim()) missing.push('SKU')
-  if (!f.description || !f.description.trim()) missing.push('Product Description')
+  if (!f.name || !f.name.trim()) missing.push('Product name is required')
+  if (!f.sku || !f.sku.trim()) missing.push('Enter a SKU')
   if (!f.category && !f.categoryId) missing.push('Category')
-  if (isSubscription.value && (f.priceMonthly === '' || f.priceMonthly == null)) missing.push('Monthly Fee')
-  if (initialTotal.value <= 0) missing.push('Initial Fee')
+  if (productType.value === 'variant') {
+    const attrs = attributes.value.filter(a => a.name && a.name.trim() && a.values.length)
+    if (!attrs.length) missing.push('Add at least one attribute value and click Apply')
+    else if (!variants.value.length) missing.push('Click Apply to generate combinations')
+    else if (variants.value.some(v => !v.sku || !String(v.sku).trim())) missing.push('Each variant needs a SKU')
+  }
   const skuVal = (f.sku || '').trim()
   if (skuVal) {
     let existing: { sku?: string }[] = []
@@ -504,12 +545,8 @@ function validate(): string[] {
   }
   return missing
 }
-// '__draftname__' is a sentinel for the Save-as-Draft name check — shown inline
-// under Product Name, not in the top "missing fields" banner.
-const realMissing = computed(() => (saveError.value || []).filter(x => x !== '__draftname__'))
-const showSaveError = computed(() => realMissing.value.length > 0)
-const missingFieldsLabel = computed(() => realMissing.value.join(', '))
-const draftNameError = computed(() => (saveError.value || []).indexOf('__draftname__') !== -1)
+const showSaveError = computed(() => (saveError.value || []).length > 0)
+const missingFieldsLabel = computed(() => (saveError.value || []).join(', '))
 const saveConfirmName = computed(() => form.name.trim() || 'this product')
 const saveDisabled = computed(() => validate().length > 0)
 
@@ -522,15 +559,7 @@ function onSaveProduct() {
   saveError.value = null
   saveConfirmOpen.value = true
 }
-function onSaveDraftProduct() {
-  if (!form.name.trim()) {
-    saveError.value = ['__draftname__']
-    return
-  }
-  saveError.value = null
-  commitSave(true)
-}
-function commitSave(asDraft = false) {
+function commitSave() {
   const f = form
   const variantsOn = productType.value === 'variant'
   const vList = variantsOn
@@ -550,8 +579,9 @@ function commitSave(asDraft = false) {
       .map(id => platformById(platforms.value, id)?.name)
       .filter((n): n is string => !!n),
     overrides: {},
-    status: asDraft ? 'Inactive' : (published.value ? 'Active' : 'Inactive'),
-    isDraft: asDraft,
+    status: published.value ? 'Active' : 'Inactive',
+    notForSale: notForSale.value,
+    isDraft: false,
     productType: productType.value,
     hasVariants: variantsOn,
     variantCount: variantsOn ? vList.length : 0,
@@ -575,11 +605,10 @@ function commitSave(asDraft = false) {
     // ignore storage failure
   }
   try {
-    sessionStorage.setItem('vertex_toast', asDraft ? 'Saved as draft' : 'Product created')
+    sessionStorage.setItem('vertex_toast', 'Product created')
   } catch {
     // ignore
   }
-  savedToastMsg.value = asDraft ? 'Saved as draft' : 'Product created successfully'
   savedToast.value = true
   formDirty.value = false
   saveConfirmOpen.value = false
@@ -606,7 +635,7 @@ function onConfirmDiscard() {
       class="fixed top-6 right-6 bg-slate-900 text-white px-[18px] py-[13px] rounded-[10px] flex items-center gap-2.5 text-[13px] font-semibold shadow-[0_8px_24px_rgba(0,0,0,0.25)] z-[200]"
     >
       <UIcon name="i-lucide-circle-check-big" class="w-4 h-4 text-green-500" />
-      {{ savedToastMsg }}
+      Product created successfully
     </div>
 
     <!-- header -->
@@ -631,12 +660,6 @@ function onConfirmDiscard() {
           @click="onCancelClick"
         >
           Cancel
-        </button>
-        <button
-          class="border border-slate-300 bg-white text-slate-700 text-sm font-semibold px-[18px] py-[9px] rounded-lg cursor-pointer inline-flex items-center justify-center hover:bg-slate-50 transition-colors"
-          @click="onSaveDraftProduct"
-        >
-          Save as Draft
         </button>
         <button
           :disabled="saveDisabled"
@@ -686,9 +709,6 @@ function onConfirmDiscard() {
                 type="text"
                 placeholder="e.g. Premium Cotton T-Shirt"
               >
-              <div v-if="draftNameError" class="text-xs text-red-600 mt-1.5">
-                Enter a product name to save a draft.
-              </div>
             </div>
             <div>
               <label class="field-label">SKU</label>
@@ -910,12 +930,27 @@ function onConfirmDiscard() {
               <span :style="knobStyle(published)" />
             </button>
           </div>
+
+          <!-- not for sale -->
+          <div class="flex items-center justify-between pt-4 mt-4 border-t border-slate-100">
+            <div>
+              <div class="text-sm font-semibold text-slate-900">
+                Not for sale
+              </div>
+              <div class="text-[13px] text-slate-500 mt-0.5">
+                {{ notForSaleHelper }}
+              </div>
+            </div>
+            <button :style="trackStyle(notForSale)" @click="toggleNotForSale">
+              <span :style="knobStyle(notForSale)" />
+            </button>
+          </div>
         </div>
       </div>
 
       <!-- ROW 2: Variant / Bundle + Pricing -->
       <div class="flex flex-wrap gap-6">
-        <div class="grow-[999] shrink basis-[420px] min-w-0 flex flex-col gap-6">
+        <div class="grow shrink basis-full min-w-0 flex flex-col gap-6">
           <!-- Product Variant -->
           <div v-if="hasVariants" class="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
             <h2 class="text-base font-bold text-slate-900 mt-0 mb-1">
@@ -1198,141 +1233,174 @@ function onConfirmDiscard() {
 
           <!-- Pricing -->
           <div class="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
-            <div class="flex items-start justify-between gap-3 mb-4">
-              <div>
-                <h2 class="text-base font-bold text-slate-900 mt-0 mb-1">
-                  Pricing
-                </h2>
-                <p class="text-[13px] text-slate-500 m-0">
-                  Set the base pricing for this product.
-                </p>
-              </div>
-            </div>
-
-            <div class="flex items-center justify-between gap-3 px-3.5 py-3 border border-slate-200 rounded-[10px] mb-5 bg-slate-50">
-              <div>
-                <div class="text-sm font-semibold text-slate-900">
-                  Subscription product
-                </div>
-                <div class="text-[13px] text-slate-500 mt-0.5">
-                  {{ subscriptionHelper }}
-                </div>
-              </div>
-              <button :style="trackStyle(isSubscription)" @click="toggleSubscription">
-                <span :style="knobStyle(isSubscription)" />
-              </button>
-            </div>
-
-            <template v-if="showProductPrice">
-              <div v-if="isSubscription" class="mb-5">
-                <div class="flex items-end gap-3">
-                  <div class="flex-1">
-                    <label class="field-label">Monthly Fee</label>
-                    <div class="relative">
-                      <span class="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">¥</span>
-                      <input
-                        v-model="form.priceMonthly"
-                        class="field-input pl-[26px]"
-                        type="number"
-                        placeholder="0.00"
-                      >
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <div class="flex items-baseline gap-2 mb-2">
-                  <label class="field-label mb-0">Initial Fee</label>
-                  <span class="text-xs text-slate-400">sum of published components below.</span>
-                </div>
-                <div class="border border-slate-200 rounded-[10px] overflow-hidden">
-                  <div class="flex items-center gap-2.5 px-3 py-2.5 bg-slate-50 border-b border-slate-200">
-                    <span class="flex-1 min-w-0 text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Component</span>
-                    <span class="w-[150px] flex-shrink-0 text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Amount</span>
-                    <span class="w-24 flex-shrink-0 text-center text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Published</span>
-                    <span class="w-[38px] flex-shrink-0" />
-                  </div>
-                  <div v-for="c in initialComponentRows" :key="c.index" :style="c.rowStyle">
-                    <div class="flex-1 min-w-0">
-                      <div
-                        v-if="c.isBase"
-                        class="flex items-center gap-2 text-sm font-semibold text-slate-900 py-0.5"
-                      >
-                        {{ c.name }}
-                        <span class="text-[11px] font-semibold px-2 py-px rounded-full bg-blue-50 text-blue-600 border border-blue-200">Base</span>
-                      </div>
-                      <div v-else class="select-wrap">
-                        <select
-                          class="field-input"
-                          :value="c.feeId"
-                          @change="setComponentFeeId(c.index, ($event.target as HTMLSelectElement).value)"
-                        >
-                          <option value="">
-                            Select component...
-                          </option>
-                          <option v-for="opt in c.options" :key="opt.id" :value="opt.id">
-                            {{ opt.name }}
-                          </option>
-                        </select>
-                      </div>
-                    </div>
-                    <div class="relative w-[150px] flex-shrink-0">
-                      <span class="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">¥</span>
-                      <input
-                        class="field-input pl-[26px]"
-                        type="number"
-                        :value="c.amount"
-                        placeholder="0"
-                        @input="setComponentAmount(c.index, ($event.target as HTMLInputElement).value)"
-                      >
-                    </div>
-                    <div class="w-24 flex-shrink-0 flex justify-center">
-                      <button
-                        :disabled="c.publishLocked"
-                        :title="c.publishTitle"
-                        :style="switchTrackCss(c.published, c.publishLocked)"
-                        @click="toggleComponentPublish(c.index)"
-                      >
-                        <span :style="switchKnobCss(c.published)" />
-                      </button>
-                    </div>
-                    <div class="w-[38px] flex-shrink-0">
-                      <button
-                        v-if="c.canRemove"
-                        title="Remove component"
-                        class="btn-icon-hover border border-slate-200 bg-white text-red-500 w-[38px] h-[38px] rounded-lg cursor-pointer flex items-center justify-center"
-                        @click="removeInitialComponent(c.index)"
-                      >
-                        <UIcon name="i-lucide-trash-2" class="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                  <div class="px-3 py-2.5 border-b border-slate-100">
-                    <button
-                      class="inline-flex items-center gap-1.5 border border-dashed border-green-500 bg-emerald-50 text-green-600 text-[13px] font-semibold px-3.5 py-2 rounded-lg cursor-pointer"
-                      @click="addInitialComponent"
-                    >
-                      <UIcon name="i-lucide-plus" class="w-3.5 h-3.5" /> Add component
-                    </button>
-                  </div>
-                  <div class="flex items-center justify-between px-3.5 py-3 bg-slate-50">
-                    <span class="text-sm font-bold text-slate-900">Initial Fee (Total)</span>
-                    <span class="text-base font-bold text-slate-900">{{ initialTotalLabel }}</span>
-                  </div>
-                </div>
-              </div>
-            </template>
             <div
-              v-if="pricePerVariant"
-              class="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-3.5 py-3 text-[13px] text-slate-500"
+              v-if="notForSale"
+              class="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3.5 py-2.5 mb-4 text-[13px] text-amber-800"
             >
-              <UIcon name="i-lucide-info" class="w-[15px] h-[15px] text-slate-400 flex-shrink-0" />
-              <span>Each variant has its own price — set it per row in the Variant Combinations table above.</span>
+              <UIcon name="i-lucide-info" class="w-[15px] h-[15px] flex-shrink-0" />
+              This product is marked "Not for sale" — pricing is optional and not shown to customers.
+            </div>
+            <div :style="pricingBodyStyle">
+              <div class="flex items-start justify-between gap-3 mb-4">
+                <div>
+                  <h2 class="text-base font-bold text-slate-900 mt-0 mb-1">
+                    Pricing
+                  </h2>
+                  <p class="text-[13px] text-slate-500 m-0">
+                    Set the base pricing for this product.
+                  </p>
+                </div>
+              </div>
+
+              <div class="flex items-center justify-between gap-3 px-3.5 py-3 border border-slate-200 rounded-[10px] mb-5 bg-slate-50">
+                <div>
+                  <div class="text-sm font-semibold text-slate-900">
+                    Subscription product
+                  </div>
+                  <div class="text-[13px] text-slate-500 mt-0.5">
+                    {{ subscriptionHelper }}
+                  </div>
+                </div>
+                <button :style="trackStyle(isSubscription)" @click="toggleSubscription">
+                  <span :style="knobStyle(isSubscription)" />
+                </button>
+              </div>
+
+              <template v-if="showProductPrice">
+                <div v-if="isSubscription" class="mb-5">
+                  <div class="flex items-end gap-3">
+                    <div class="flex-1">
+                      <label class="field-label">Monthly Fee</label>
+                      <div class="relative">
+                        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">¥</span>
+                        <input
+                          v-model="form.priceMonthly"
+                          class="field-input pl-[26px]"
+                          type="number"
+                          placeholder="0.00"
+                          @focus="onPricingFocus"
+                        >
+                      </div>
+                    </div>
+                    <div v-if="pricingEditing" class="flex gap-1.5 flex-shrink-0">
+                      <button
+                        title="Save"
+                        class="border-none bg-green-500 text-white w-[38px] h-[38px] rounded-lg cursor-pointer inline-flex items-center justify-center"
+                        @click="onPricingSave"
+                      >
+                        <UIcon name="i-lucide-check" class="w-[17px] h-[17px]" />
+                      </button>
+                      <button
+                        title="Cancel"
+                        class="btn-icon-hover border border-slate-200 bg-white text-slate-500 w-[38px] h-[38px] rounded-lg cursor-pointer inline-flex items-center justify-center"
+                        @click="onPricingCancel"
+                      >
+                        <UIcon name="i-lucide-x" class="w-[17px] h-[17px]" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <div class="flex items-baseline gap-2 mb-2">
+                    <label class="field-label mb-0">Initial Fee</label>
+                    <span class="text-xs text-slate-400">sum of published components below.</span>
+                  </div>
+                  <div class="border border-slate-200 rounded-[10px] overflow-hidden">
+                    <div class="flex items-center gap-2.5 px-3 py-2.5 bg-slate-50 border-b border-slate-200">
+                      <span class="flex-1 min-w-0 text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Component</span>
+                      <span class="w-[150px] flex-shrink-0 text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Amount</span>
+                      <span class="w-24 flex-shrink-0 text-center text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Published</span>
+                      <span class="w-[38px] flex-shrink-0" />
+                    </div>
+                    <template v-for="c in initialComponentRows" :key="c.index">
+                      <div v-if="c.showAddBefore" class="px-3 py-2.5 border-b border-slate-100">
+                        <button
+                          class="inline-flex items-center gap-1.5 border border-dashed border-green-500 bg-emerald-50 text-green-600 text-[13px] font-semibold px-3.5 py-2 rounded-lg cursor-pointer"
+                          @click="addInitialComponent"
+                        >
+                          <UIcon name="i-lucide-plus" class="w-3.5 h-3.5" /> Add component
+                        </button>
+                      </div>
+                      <div :style="c.rowStyle">
+                        <div class="flex-1 min-w-0">
+                          <div
+                            v-if="c.isBase"
+                            class="flex items-center gap-2 text-sm font-semibold text-slate-900 py-0.5"
+                          >
+                            {{ c.name }}
+                            <span class="text-[11px] font-semibold px-2 py-px rounded-full bg-blue-50 text-blue-600 border border-blue-200">Base</span>
+                          </div>
+                          <div v-else class="select-wrap">
+                            <select
+                              class="field-input"
+                              :value="c.feeId"
+                              @change="setComponentFeeId(c.index, ($event.target as HTMLSelectElement).value)"
+                            >
+                              <option value="">
+                                Select component...
+                              </option>
+                              <option v-for="opt in c.options" :key="opt.id" :value="opt.id">
+                                {{ opt.name }}
+                              </option>
+                            </select>
+                          </div>
+                        </div>
+                        <div class="relative w-[150px] flex-shrink-0">
+                          <span class="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">¥</span>
+                          <input
+                            class="field-input pl-[26px]"
+                            type="number"
+                            :value="c.amount"
+                            placeholder="0"
+                            @input="setComponentAmount(c.index, ($event.target as HTMLInputElement).value)"
+                          >
+                        </div>
+                        <div class="w-24 flex-shrink-0 flex justify-center">
+                          <button
+                            :disabled="c.publishLocked"
+                            :title="c.publishTitle"
+                            :style="switchTrackCss(c.published, c.publishLocked)"
+                            @click="toggleComponentPublish(c.index)"
+                          >
+                            <span :style="switchKnobCss(c.published)" />
+                          </button>
+                        </div>
+                        <div class="w-[38px] flex-shrink-0">
+                          <button
+                            v-if="c.canRemove"
+                            title="Remove component"
+                            class="btn-icon-hover border border-slate-200 bg-white text-red-500 w-[38px] h-[38px] rounded-lg cursor-pointer flex items-center justify-center"
+                            @click="removeInitialComponent(c.index)"
+                          >
+                            <UIcon name="i-lucide-trash-2" class="w-4 h-4" />
+                          </button>
+                          <span
+                            v-else
+                            class="w-[38px] h-[38px] inline-flex items-center justify-center text-slate-300"
+                          >
+                            <UIcon name="i-lucide-lock" class="w-3.5 h-3.5" />
+                          </span>
+                        </div>
+                      </div>
+                    </template>
+                    <div class="flex items-center justify-between px-3.5 py-3 bg-slate-50">
+                      <span class="text-sm font-bold text-slate-900">Initial Fee (Total)</span>
+                      <span class="text-base font-bold text-slate-900">{{ initialTotalLabel }}</span>
+                    </div>
+                  </div>
+                </div>
+              </template>
+              <div
+                v-if="pricePerVariant"
+                class="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-3.5 py-3 text-[13px] text-slate-500"
+              >
+                <UIcon name="i-lucide-info" class="w-[15px] h-[15px] text-slate-400 flex-shrink-0" />
+                <span>Each variant has its own price — set it per row in the Variant Combinations table above.</span>
+              </div>
             </div>
           </div>
         </div>
-        <div class="grow shrink basis-[320px]" aria-hidden="true" />
       </div>
     </div>
 

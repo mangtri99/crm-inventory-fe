@@ -47,6 +47,8 @@ export interface Platform {
 export interface AttributeDef {
   id: string
   name: string
+  // input type: Text | Select | Radio | Numeric | Checkbox (legacy rows have none)
+  type?: string
   values: string[]
 }
 
@@ -108,6 +110,7 @@ export interface ProductRow {
 export interface StoredProduct extends ProductRow {
   notes?: string
   description?: string
+  notForSale?: boolean
   isDraft?: boolean
   overrides?: Record<string, unknown>
   imageName?: string

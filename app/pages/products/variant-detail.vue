@@ -1,0 +1,815 @@
+<script setup lang="ts">
+import type { Fee, Platform } from '~/types'
+
+useHead({ title: 'Variant Detail — Vertex' })
+
+const route = useRoute()
+
+// ── shapes ──
+interface VariantComponent { feeId: string, published?: boolean, amount: string | number, label?: string }
+interface VariantPricing { isSubscription: boolean, monthly: string | number, components: VariantComponent[] }
+interface PriceOverride { monthly?: string | number, componentAmounts?: Record<string, string> }
+interface VariantRow {
+  name: string
+  sku?: string
+  price?: string | number
+  stock?: string | number
+  active?: boolean
+  image?: string | null
+  description?: string
+  pricing?: VariantPricing
+  priceOverrides?: Record<string, PriceOverride>
+}
+interface ParentProduct {
+  id: string | null
+  name: string
+  sku?: string
+  productType?: string
+  hasVariants?: boolean
+  category?: string
+  categoryPath?: string
+  platformIds?: string[]
+  attributes?: { name: string, values: string[] }[]
+  variants?: VariantRow[]
+}
+
+const DEMO_PRODUCT: ParentProduct = {
+  id: null,
+  name: 'Tourist SIM 15GB',
+  sku: 'SKU-2000',
+  productType: 'variant',
+  hasVariants: true,
+  category: 'SIM Card',
+  platformIds: ['p_sk'],
+  attributes: [
+    { name: 'Data', values: ['15GB'] },
+    { name: 'Duration', values: ['8 Days', '16 Days', '31 Days'] }
+  ],
+  variants: [
+    { name: '15GB / 8 Days', sku: 'SKU-2000-01', price: 24, stock: 42, active: true },
+    { name: '15GB / 16 Days', sku: 'SKU-2000-02', price: 32, stock: 28, active: true },
+    { name: '15GB / 31 Days', sku: 'SKU-2000-03', price: 44, stock: 12, active: false }
+  ]
+}
+
+function qParam(v: unknown): string {
+  if (Array.isArray(v)) return typeof v[0] === 'string' ? v[0] : ''
+  return typeof v === 'string' ? v : ''
+}
+const productKey = qParam(route.query.product) || 'demo'
+const variantNameQuery = qParam(route.query.variant)
+
+// ── state ──
+// SSR-safe: server and first client paint both render the DEMO product; the
+// stored record is swapped in on mount (localStorage is client-only).
+const product = ref<ParentProduct>({ ...DEMO_PRODUCT })
+const isStored = ref(false)
+const mode = ref<'view' | 'edit'>('view')
+const scope = ref('default')
+const scopeOpen = ref(false)
+const draft = ref<VariantRow | null>(null)
+const toast = ref<string | null>(null)
+
+const platforms = ref<Platform[]>([])
+const fees = ref<Fee[]>([...FEE_SEED])
+const imageInput = ref<HTMLInputElement | null>(null)
+let toastTimer: number | null = null
+
+onMounted(() => {
+  platforms.value = loadPlatforms()
+  fees.value = loadFees()
+  if (productKey && productKey !== 'demo') {
+    try {
+      const list = JSON.parse(localStorage.getItem('vertex_products') || '[]')
+      const rec = list.find((r: ParentProduct) => r.id === productKey)
+      if (rec) {
+        product.value = rec
+        isStored.value = !!rec.id
+      }
+    } catch {
+      // ignore malformed storage
+    }
+  }
+})
+
+onBeforeUnmount(() => {
+  if (toastTimer !== null) clearTimeout(toastTimer)
+})
+
+const isViewMode = computed(() => mode.value === 'view')
+const isEditMode = computed(() => mode.value === 'edit')
+
+// ── the variant + its hydrated pricing ──
+// a variant carries a full pricing object; legacy rows only have `price`, which
+// seeds the Base Price component amount
+function hydrate(v: VariantRow): VariantRow {
+  const d: VariantRow = { ...v }
+  if (!d.pricing) {
+    d.pricing = {
+      isSubscription: false,
+      monthly: '',
+      components: [{ feeId: FEE_BASE_ID, published: true, amount: (v.price === '' || v.price == null) ? '' : v.price }]
+    }
+  } else {
+    d.pricing = {
+      isSubscription: !!d.pricing.isSubscription,
+      monthly: d.pricing.monthly != null ? d.pricing.monthly : '',
+      components: (d.pricing.components || []).map(c => ({ ...c }))
+    }
+  }
+  d.priceOverrides = d.priceOverrides ? JSON.parse(JSON.stringify(d.priceOverrides)) : {}
+  return d
+}
+
+const variant = computed<VariantRow | null>(() =>
+  (product.value.variants || []).find(v => v.name === variantNameQuery) || null
+)
+const found = computed(() => !!variant.value)
+// the row the page renders from: the draft while editing, a hydrated copy in view
+const src = computed<VariantRow | null>(() => {
+  if (isEditMode.value && draft.value) return draft.value
+  return variant.value ? hydrate(variant.value) : null
+})
+
+const parentName = computed(() => product.value.name || 'Product')
+const parentTo = computed(() => isStored.value && product.value.id
+  ? { path: '/products/detail', query: { id: product.value.id } }
+  : { path: '/products/detail' }
+)
+const headerTitle = computed(() => (parentName.value ? parentName.value.toUpperCase() + ' — ' : '') + variantNameQuery)
+const skuLabel = computed(() => src.value?.sku || '—')
+const active = computed(() => !!src.value?.active)
+const statusLabel = computed(() => active.value ? 'Active' : 'Inactive')
+const statusHelper = computed(() => active.value ? 'Available for sale' : 'Hidden from customers')
+const categoryLabel = computed(() => product.value.categoryPath || product.value.category || '—')
+const attrPairs = computed(() => {
+  const attrNames = (product.value.attributes || []).map(a => a.name)
+  return (variantNameQuery || '').split(' / ').map((val, i) => ({
+    label: (attrNames[i] ? attrNames[i] + ' = ' : '') + val
+  }))
+})
+
+// ── style helpers (this screen's toggles are larger than the other pages') ──
+function badgeStyle(on: boolean) {
+  return on
+    ? 'display:inline-block;font-size:12px;font-weight:700;padding:3px 12px;border-radius:999px;background:#ecfdf5;color:#00a155;border:1px solid #a7f3d0;'
+    : 'display:inline-block;font-size:12px;font-weight:700;padding:3px 12px;border-radius:999px;background:#f1f5f9;color:#64748b;border:1px solid #e2e8f0;'
+}
+function trackStyle(on: boolean, disabled: boolean) {
+  return `width:44px;height:24px;border-radius:999px;border:none;background:${on ? '#00c16a' : '#e2e8f0'};position:relative;padding:2px;display:inline-flex;align-items:center;transition:background 150ms ease;cursor:${disabled ? 'not-allowed' : 'pointer'};${disabled ? 'opacity:0.6;' : ''}`
+}
+function knobStyle(on: boolean) {
+  return `width:20px;height:20px;border-radius:999px;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,0.2);transform:translateX(${on ? '20px' : '0px'});transition:transform 150ms ease;display:block;`
+}
+function smallTrack(on: boolean) {
+  return `width:38px;height:22px;border-radius:999px;border:none;background:${on ? '#00c16a' : '#e2e8f0'};position:relative;padding:2px;display:inline-flex;align-items:center;cursor:pointer;transition:background 150ms ease;`
+}
+function smallKnob(on: boolean) {
+  return `width:18px;height:18px;border-radius:999px;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,0.2);transform:translateX(${on ? '16px' : '0px'});transition:transform 150ms ease;display:block;`
+}
+function scopeOptionStyle(selected: boolean) {
+  return `width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;border:none;border-radius:6px;background:${selected ? '#ecfdf5' : 'transparent'};padding:8px 10px;font-size:14px;color:${selected ? '#047857' : '#334155'};font-weight:${selected ? 600 : 400};cursor:pointer;`
+}
+const BADGE_PUBLISHED = 'font-size:11px;font-weight:600;color:#64748b;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:999px;padding:1px 8px;white-space:nowrap;'
+const BADGE_UNPUBLISHED = 'font-size:11px;font-weight:600;color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:999px;padding:1px 8px;white-space:nowrap;'
+
+// ── scope (Default / one of the parent's assigned platforms) ──
+const assignedPlatforms = computed(() =>
+  (product.value.platformIds || []).map(id => platformById(platforms.value, id)).filter((p): p is Platform => !!p)
+)
+const scopeChoices = computed(() =>
+  [{ id: 'default', name: 'Default (All Platforms)' }]
+    .concat(assignedPlatforms.value.map(p => ({ id: p.id, name: p.name })))
+)
+const isDefaultScope = computed(() => scope.value === 'default')
+const scopeDisabled = computed(() => assignedPlatforms.value.length === 0)
+const scopeLabel = computed(() => (scopeChoices.value.find(c => c.id === scope.value) || scopeChoices.value[0])?.name || 'Default (All Platforms)')
+const scopeHelper = computed(() => {
+  if (isViewMode.value) return 'Showing effective values for this scope. Click Edit to override them.'
+  return isDefaultScope.value ? 'Editing the base values for all platforms.' : 'Editing an override for this platform.'
+})
+const scopeTriggerStyle = computed(() =>
+  `display:inline-flex;align-items:center;gap:6px;justify-content:space-between;border:1px solid ${scopeOpen.value ? '#00c16a' : '#e2e8f0'};border-radius:8px;padding:7px 12px;height:36px;font-size:13px;font-weight:600;background:#fff;color:#0f172a;cursor:${scopeDisabled.value ? 'not-allowed' : 'pointer'};min-width:200px;${scopeDisabled.value ? 'opacity:0.6;' : ''}`
+)
+const scopeChevronStyle = computed(() =>
+  `display:inline-flex;align-items:center;color:#64748b;transition:transform 150ms ease;transform:rotate(${scopeOpen.value ? '180deg' : '0deg'});`
+)
+function onToggleScope() {
+  if (!scopeDisabled.value) scopeOpen.value = !scopeOpen.value
+}
+function pickScope(id: string) {
+  scope.value = id
+  scopeOpen.value = false
+}
+
+// ── draft edits ──
+function update(field: keyof VariantRow, value: unknown) {
+  if (!draft.value) return
+  draft.value = { ...draft.value, [field]: value } as VariantRow
+}
+function setMonthly(value: string) {
+  const d = draft.value
+  if (!d || !d.pricing) return
+  if (isDefaultScope.value) {
+    draft.value = { ...d, pricing: { ...d.pricing, monthly: value } }
+    return
+  }
+  const ov: Record<string, PriceOverride> = { ...(d.priceOverrides || {}) }
+  ov[scope.value] = { ...(ov[scope.value] || {}), monthly: value }
+  draft.value = { ...d, priceOverrides: ov }
+}
+function setComponentAmount(feeId: string, value: string) {
+  const d = draft.value
+  if (!d || !d.pricing) return
+  if (isDefaultScope.value) {
+    draft.value = {
+      ...d,
+      pricing: { ...d.pricing, components: d.pricing.components.map(c => c.feeId === feeId ? { ...c, amount: value } : c) }
+    }
+    return
+  }
+  const ov: Record<string, PriceOverride> = { ...(d.priceOverrides || {}) }
+  const cur: PriceOverride = { ...(ov[scope.value] || {}) }
+  const prev = cur.componentAmounts || {}
+  const amts: Record<string, string> = {}
+  Object.keys(prev).forEach((k) => {
+    if (k !== feeId) amts[k] = prev[k]!
+  })
+  if (value !== '') amts[feeId] = value
+  cur.componentAmounts = amts
+  ov[scope.value] = cur
+  draft.value = { ...d, priceOverrides: ov }
+}
+function togglePublish(feeId: string) {
+  const d = draft.value
+  if (!d || !d.pricing) return
+  draft.value = {
+    ...d,
+    pricing: { ...d.pricing, components: d.pricing.components.map(c => c.feeId === feeId ? { ...c, published: c.published === false } : c) }
+  }
+}
+function onToggleStatus() {
+  if (isEditMode.value) update('active', !draft.value?.active)
+}
+function onStockChange(e: Event) {
+  update('stock', (e.target as HTMLInputElement).value)
+}
+function onDescriptionChange(e: Event) {
+  update('description', (e.target as HTMLTextAreaElement).value)
+}
+
+// ── image ──
+function onPickImage() {
+  if (imageInput.value) {
+    imageInput.value.value = ''
+    imageInput.value.click()
+  }
+}
+function onImageChange(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
+  if (!file || !file.type.startsWith('image/')) return
+  const reader = new FileReader()
+  reader.onload = ev => update('image', String(ev.target?.result || ''))
+  reader.readAsDataURL(file)
+}
+function onRemoveImage() {
+  update('image', null)
+}
+
+// ── pricing (effective values at the selected scope) ──
+const pricing = computed<VariantPricing>(() => src.value?.pricing || { isSubscription: false, monthly: '', components: [] })
+const scopeOv = computed<PriceOverride>(() =>
+  (!isDefaultScope.value && src.value?.priceOverrides) ? (src.value.priceOverrides[scope.value] || {}) : {}
+)
+const effMonthly = computed(() => {
+  const ov = scopeOv.value.monthly
+  return (!isDefaultScope.value && ov !== undefined && ov !== '') ? ov : pricing.value.monthly
+})
+function effAmount(c: VariantComponent) {
+  const amts = scopeOv.value.componentAmounts || {}
+  const ov = amts[c.feeId]
+  return (!isDefaultScope.value && ov !== undefined && ov !== '') ? ov : c.amount
+}
+const subscriptionLabel = computed(() => pricing.value.isSubscription ? 'Subscription — recurring monthly fee' : 'One-time purchase')
+const monthlyLabel = computed(() => (effMonthly.value === '' || effMonthly.value == null) ? '—' : '¥' + Number(effMonthly.value).toLocaleString('en-US'))
+const monthlyValue = computed(() => (effMonthly.value === '' || effMonthly.value == null) ? '' : effMonthly.value)
+const pricingHelper = computed(() => isDefaultScope.value ? 'Base pricing for this variant.' : 'Per-platform pricing (amounts may override the base).')
+const pricingComponents = computed(() =>
+  (pricing.value.components || []).map((c) => {
+    const amt = effAmount(c)
+    const pub = c.published !== false
+    return {
+      feeId: c.feeId,
+      name: feeById(fees.value, c.feeId)?.name || c.label || 'Component',
+      amount: (amt === '' || amt == null) ? '' : amt,
+      amountLabel: (amt === '' || amt == null) ? '¥0' : '¥' + Number(amt).toLocaleString('en-US'),
+      published: pub,
+      publishedLabel: pub ? 'Published' : 'Unpublished',
+      publishedStyle: pub ? BADGE_PUBLISHED : BADGE_UNPUBLISHED,
+      publishTrackStyle: smallTrack(pub),
+      publishKnobStyle: smallKnob(pub),
+      rowStyle: `display:grid;grid-template-columns:1fr 150px 130px;gap:8px;align-items:center;padding:11px 16px;border-bottom:1px solid #f1f5f9;${pub ? '' : 'background:#fafafa;color:#94a3b8;'}`
+    }
+  })
+)
+const initialTotalLabel = computed(() => {
+  const total = (pricing.value.components || []).reduce((t, c) => {
+    if (c.published === false) return t
+    return t + (parseFloat(String(effAmount(c))) || 0)
+  }, 0)
+  return '¥' + Math.round(total).toLocaleString('en-US')
+})
+const stockLabel = computed(() => (src.value?.stock === '' || src.value?.stock == null) ? '—' : String(src.value.stock))
+const stockValue = computed(() => (src.value?.stock === '' || src.value?.stock == null) ? '' : src.value.stock)
+const descriptionDisplay = computed(() => src.value?.description ? src.value.description : '—')
+const descriptionValue = computed(() => src.value?.description || '')
+
+// ── mode transitions ──
+function onEditClick() {
+  if (!variant.value) return
+  draft.value = hydrate(variant.value)
+  scope.value = 'default'
+  mode.value = 'edit'
+}
+function onCancelEdit() {
+  draft.value = variant.value ? hydrate(variant.value) : null
+  scope.value = 'default'
+  scopeOpen.value = false
+  mode.value = 'view'
+}
+function onSaveEdit() {
+  const d = draft.value
+  if (!d) return
+  const merged: ParentProduct = {
+    ...product.value,
+    variants: (product.value.variants || []).map(v => v.name === variantNameQuery ? { ...d } : v)
+  }
+  if (isStored.value && merged.id) {
+    try {
+      const list = JSON.parse(localStorage.getItem('vertex_products') || '[]')
+      const idx = list.findIndex((r: ParentProduct) => r.id === merged.id)
+      if (idx >= 0) {
+        list[idx] = merged
+        localStorage.setItem('vertex_products', JSON.stringify(list))
+      }
+    } catch {
+      // ignore storage failure
+    }
+  }
+  product.value = merged
+  mode.value = 'view'
+  toast.value = 'Variant updated successfully'
+  if (toastTimer !== null) clearTimeout(toastTimer)
+  toastTimer = window.setTimeout(() => {
+    toast.value = null
+  }, 2800)
+}
+</script>
+
+<template>
+  <div class="p-5 max-w-[1280px]">
+    <!-- breadcrumb -->
+    <div class="text-[13px] text-slate-500 mb-3.5">
+      <NuxtLink to="/dashboard" class="text-green-600 no-underline hover:underline">
+        Inventory
+      </NuxtLink>
+      <span class="text-slate-300">/</span>
+      <NuxtLink to="/dashboard" class="text-green-600 no-underline hover:underline">
+        Product
+      </NuxtLink>
+      <span class="text-slate-300">/</span>
+      <NuxtLink :to="parentTo" class="text-green-600 no-underline hover:underline">
+        {{ parentName }}
+      </NuxtLink>
+      <span class="text-slate-300">/</span>
+      <span class="text-slate-900 font-semibold">{{ variantNameQuery }}</span>
+    </div>
+
+    <!-- header -->
+    <div class="flex items-start justify-between gap-4 mb-6 flex-wrap">
+      <div class="flex items-start gap-3 min-w-0">
+        <NuxtLink
+          :to="parentTo"
+          class="btn-icon-hover w-[38px] h-[38px] border border-slate-200 bg-white rounded-lg inline-flex items-center justify-center text-slate-700 flex-shrink-0"
+        >
+          <UIcon name="i-lucide-arrow-left" class="w-[18px] h-[18px]" />
+        </NuxtLink>
+        <div class="min-w-0">
+          <div class="flex items-center gap-2.5 flex-wrap">
+            <h1 class="text-[22px] font-bold text-slate-900 m-0">
+              {{ headerTitle }}
+            </h1>
+            <span v-if="found" :style="badgeStyle(active)">{{ statusLabel }}</span>
+          </div>
+          <div class="text-sm text-slate-500 mt-1">
+            SKU: {{ skuLabel }}
+          </div>
+        </div>
+      </div>
+      <div v-if="found" class="flex gap-2.5 flex-shrink-0">
+        <button
+          v-if="isViewMode"
+          class="border border-slate-200 bg-white text-slate-700 text-sm font-semibold px-[18px] py-[9px] rounded-lg cursor-pointer inline-flex items-center gap-1.5 hover:bg-slate-50 transition-colors"
+          @click="onEditClick"
+        >
+          <UIcon name="i-lucide-pencil" class="w-3.5 h-3.5" /> Edit
+        </button>
+        <template v-else>
+          <button
+            class="border border-slate-200 bg-white text-slate-700 text-sm font-semibold px-[18px] py-[9px] rounded-lg cursor-pointer hover:bg-slate-50 transition-colors"
+            @click="onCancelEdit"
+          >
+            Cancel
+          </button>
+          <button
+            class="border-none bg-green-500 text-white text-sm font-bold px-5 py-[9px] rounded-lg cursor-pointer shadow-sm hover:bg-green-600 transition-colors"
+            @click="onSaveEdit"
+          >
+            Save Changes
+          </button>
+        </template>
+      </div>
+    </div>
+
+    <!-- not found -->
+    <div
+      v-if="!found"
+      class="bg-white border border-slate-200 rounded-xl px-6 py-12 text-center"
+    >
+      <div class="text-base font-bold text-slate-900 mb-1.5">
+        Variant not found
+      </div>
+      <div class="text-sm text-slate-400 mb-4">
+        This variant may have been removed.
+      </div>
+      <NuxtLink
+        :to="parentTo"
+        class="border-none bg-green-500 text-white text-sm font-bold px-[18px] py-[9px] rounded-lg inline-flex items-center gap-1.5 no-underline hover:bg-green-600 transition-colors"
+      >
+        Back to product
+      </NuxtLink>
+    </div>
+
+    <div v-else class="flex flex-col gap-6">
+      <!-- scope card -->
+      <div class="bg-white border border-slate-200 rounded-xl shadow-sm px-5 py-4">
+        <div class="flex items-center gap-3.5 flex-wrap">
+          <div class="flex items-center gap-2 flex-shrink-0">
+            <UIcon name="i-lucide-layers" class="w-4 h-4 text-green-600" />
+            <span class="text-sm font-bold text-slate-900">Viewing for</span>
+          </div>
+          <div class="relative min-w-[220px]">
+            <button
+              type="button"
+              :disabled="scopeDisabled"
+              :style="scopeTriggerStyle"
+              @click="onToggleScope"
+            >
+              <span class="whitespace-nowrap overflow-hidden text-ellipsis">{{ scopeLabel }}</span>
+              <span :style="scopeChevronStyle"><UIcon name="i-lucide-chevron-down" class="w-4 h-4" /></span>
+            </button>
+            <template v-if="scopeOpen">
+              <div class="fixed inset-0 z-40" @click="scopeOpen = false" />
+              <div class="absolute top-[calc(100%+4px)] left-0 min-w-[220px] z-50 bg-white border border-slate-200 rounded-lg shadow-[0_10px_30px_rgba(0,0,0,0.14)] p-1">
+                <button
+                  v-for="opt in scopeChoices"
+                  :key="opt.id"
+                  type="button"
+                  :style="scopeOptionStyle(opt.id === scope)"
+                  @click="pickScope(opt.id)"
+                >
+                  <span>{{ opt.name }}</span>
+                  <UIcon v-if="opt.id === scope" name="i-lucide-check" class="w-[15px] h-[15px] text-green-600" />
+                </button>
+              </div>
+            </template>
+          </div>
+          <span class="text-[12.5px] text-slate-500">{{ scopeHelper }}</span>
+        </div>
+      </div>
+
+      <!-- Core identification + Settings -->
+      <div class="flex flex-wrap gap-6 items-stretch">
+        <div class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 grow-[999] shrink basis-[360px] min-w-0">
+          <h2 class="text-base font-bold text-slate-900 mt-0 mb-1">
+            Core Identification
+          </h2>
+          <p class="text-[13px] text-slate-500 mt-0 mb-5">
+            Identity of this product.
+          </p>
+
+          <div class="grid grid-cols-2 gap-4 mb-4">
+            <div>
+              <span class="static-label">Product Name</span>
+              <div class="static-value">
+                {{ parentName }}
+              </div>
+            </div>
+            <div>
+              <span class="static-label">SKU</span>
+              <div class="static-value">
+                {{ skuLabel }}
+              </div>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-4 mb-4">
+            <div>
+              <span class="static-label">Product Type</span>
+              <div class="static-value">
+                Single
+              </div>
+            </div>
+            <div />
+          </div>
+
+          <div class="mb-4">
+            <label class="field-label">Notes</label>
+            <div v-if="isViewMode" class="static-value whitespace-pre-wrap">
+              {{ descriptionDisplay }}
+            </div>
+            <textarea
+              v-else
+              class="field-input resize-y"
+              rows="3"
+              :value="descriptionValue"
+              placeholder="Notes specific to this variant..."
+              @input="onDescriptionChange"
+            />
+          </div>
+
+          <div>
+            <label class="field-label">Product Image</label>
+            <div
+              v-if="src && src.image"
+              class="relative w-full max-w-[280px] border border-slate-200 rounded-[10px] overflow-hidden bg-slate-50"
+            >
+              <img :src="src.image" class="w-full block max-h-[200px] object-contain">
+              <button
+                v-if="isEditMode"
+                title="Remove image"
+                class="absolute top-2 right-2 border-none bg-slate-900/60 text-white w-[30px] h-[30px] rounded-lg cursor-pointer inline-flex items-center justify-center"
+                @click="onRemoveImage"
+              >
+                <UIcon name="i-lucide-x" class="w-[15px] h-[15px]" />
+              </button>
+            </div>
+            <template v-else>
+              <button
+                v-if="isEditMode"
+                class="w-full max-w-[280px] border-[1.5px] border-dashed border-slate-300 rounded-[10px] p-7 flex flex-col items-center gap-2 text-slate-400 bg-slate-50 cursor-pointer"
+                @click="onPickImage"
+              >
+                <UIcon name="i-lucide-image-plus" class="w-[22px] h-[22px]" />
+                <span class="text-[13px]">Click to upload an image</span>
+              </button>
+              <div
+                v-else
+                class="w-full max-w-[280px] border-[1.5px] border-dashed border-slate-200 rounded-[10px] p-7 flex flex-col items-center gap-2 text-slate-300"
+              >
+                <UIcon name="i-lucide-image" class="w-[22px] h-[22px]" />
+                <span class="text-[13px]">No image</span>
+              </div>
+            </template>
+            <input
+              ref="imageInput"
+              type="file"
+              accept="image/*"
+              class="hidden"
+              @change="onImageChange"
+            >
+          </div>
+        </div>
+
+        <div class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 grow shrink basis-[300px] min-w-0 self-stretch">
+          <h2 class="text-base font-bold text-slate-900 mt-0 mb-5">
+            Settings
+          </h2>
+
+          <div class="mb-4">
+            <span class="static-label">Category</span>
+            <div class="static-value">
+              {{ categoryLabel }}
+            </div>
+          </div>
+          <div class="mb-4">
+            <span class="static-label">Platforms</span>
+            <div class="flex flex-wrap gap-1.5 mt-[5px]">
+              <span
+                v-for="pl in assignedPlatforms"
+                :key="pl.id"
+                class="text-xs font-semibold text-slate-600 bg-slate-100 border border-slate-200 rounded-full px-2.5 py-[3px]"
+              >{{ pl.name }}</span>
+              <span v-if="!assignedPlatforms.length" class="text-sm text-slate-300">—</span>
+            </div>
+          </div>
+
+          <div class="mb-4">
+            <label class="field-label">Stock</label>
+            <div v-if="isViewMode" class="static-value">
+              {{ stockLabel }}
+            </div>
+            <input
+              v-else
+              class="field-input"
+              type="number"
+              :value="stockValue"
+              placeholder="0"
+              @input="onStockChange"
+            >
+          </div>
+
+          <div class="flex items-center justify-between gap-3 py-3.5 border-t border-slate-100">
+            <div>
+              <div class="text-sm font-semibold text-slate-900">
+                Status
+              </div>
+              <div class="text-[13px] text-slate-500 mt-0.5">
+                {{ statusHelper }}
+              </div>
+            </div>
+            <button
+              :disabled="isViewMode"
+              :style="trackStyle(active, isViewMode)"
+              @click="onToggleStatus"
+            >
+              <span :style="knobStyle(active)" />
+            </button>
+          </div>
+
+          <div class="pt-3.5 border-t border-slate-100">
+            <span class="static-label">Parent product</span>
+            <div class="mt-[5px]">
+              <NuxtLink
+                :to="parentTo"
+                class="text-[15px] font-semibold text-green-600 inline-flex items-center gap-1.5 no-underline hover:underline"
+              >
+                {{ parentName }} <UIcon name="i-lucide-arrow-up-right" class="w-3.5 h-3.5" />
+              </NuxtLink>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- attributes -->
+      <div class="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
+        <h2 class="text-base font-bold text-slate-900 mt-0 mb-1">
+          Attributes
+        </h2>
+        <p class="text-[13px] text-slate-500 mt-0 mb-4">
+          The combination that defines this variant.
+        </p>
+        <div class="flex flex-wrap gap-2">
+          <span
+            v-for="a in attrPairs"
+            :key="a.label"
+            class="text-[13px] font-semibold px-3 py-[5px] rounded-full bg-slate-100 text-slate-700 border border-slate-200"
+          >{{ a.label }}</span>
+        </div>
+      </div>
+
+      <!-- pricing -->
+      <div class="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
+        <h2 class="text-base font-bold text-slate-900 mt-0 mb-1">
+          Pricing
+        </h2>
+        <p class="text-[13px] text-slate-500 mt-0 mb-5">
+          {{ pricingHelper }}
+        </p>
+
+        <div class="flex flex-wrap gap-4 mb-5">
+          <div class="grow shrink basis-[180px] min-w-0 border border-slate-200 rounded-[10px] px-4 py-3.5">
+            <div class="text-xs font-bold text-slate-500 uppercase tracking-[0.03em] mb-1.5">
+              Subscription
+            </div>
+            <div class="text-sm text-slate-900">
+              {{ subscriptionLabel }}
+            </div>
+          </div>
+          <div class="grow shrink basis-[140px] min-w-0 border border-slate-200 rounded-[10px] px-4 py-3.5">
+            <div class="text-xs font-bold text-slate-500 uppercase tracking-[0.03em] mb-1.5">
+              Monthly Fee
+            </div>
+            <div v-if="isViewMode" class="text-lg font-bold text-slate-900">
+              {{ monthlyLabel }}
+            </div>
+            <div v-else class="relative">
+              <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-slate-400">¥</span>
+              <input
+                class="field-input pl-6 py-1.5"
+                type="number"
+                :value="monthlyValue"
+                placeholder="0"
+                @input="setMonthly(($event.target as HTMLInputElement).value)"
+              >
+            </div>
+          </div>
+          <div class="grow shrink basis-[140px] min-w-0 border border-slate-200 rounded-[10px] px-4 py-3.5">
+            <div class="text-xs font-bold text-slate-500 uppercase tracking-[0.03em] mb-1.5">
+              Initial Fee
+            </div>
+            <div class="text-lg font-bold text-slate-900">
+              {{ initialTotalLabel }}
+            </div>
+          </div>
+        </div>
+
+        <div class="border border-slate-200 rounded-[10px] overflow-hidden">
+          <div class="grid grid-cols-[1fr_150px_130px] gap-2 items-center px-4 py-[11px] bg-slate-50 border-b border-slate-200">
+            <span class="text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Component</span>
+            <span class="text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Amount</span>
+            <span class="text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Published</span>
+          </div>
+          <div v-for="c in pricingComponents" :key="c.feeId" :style="c.rowStyle">
+            <span class="text-sm font-semibold">{{ c.name }}</span>
+            <span v-if="isViewMode" class="text-sm">{{ c.amountLabel }}</span>
+            <div v-else class="relative">
+              <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-[13px] text-slate-400">¥</span>
+              <input
+                class="field-input px-2 py-1.5 pl-[22px] text-[13px]"
+                type="number"
+                :value="c.amount"
+                placeholder="0"
+                @input="setComponentAmount(c.feeId, ($event.target as HTMLInputElement).value)"
+              >
+            </div>
+            <span>
+              <span v-if="isViewMode" :style="c.publishedStyle">{{ c.publishedLabel }}</span>
+              <button v-else :style="c.publishTrackStyle" @click="togglePublish(c.feeId)">
+                <span :style="c.publishKnobStyle" />
+              </button>
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- toast -->
+    <div
+      v-if="toast"
+      class="toast fixed bottom-6 right-6 z-[300] bg-white border border-slate-200 border-l-4 border-l-green-500 rounded-[10px] shadow-[0_10px_30px_rgba(0,0,0,0.14)] px-[18px] py-3.5 flex items-center gap-3"
+    >
+      <UIcon name="i-lucide-circle-check" class="w-5 h-5 text-green-600" />
+      <span class="text-[15px] font-semibold text-slate-900">{{ toast }}</span>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.field-input {
+  width: 100%;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 15px;
+  color: #0f172a;
+  background: #fff;
+  outline: none;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+.field-input:focus {
+  border-color: #00c16a;
+  box-shadow: 0 0 0 3px rgba(0, 193, 106, 0.15);
+}
+.field-input:disabled {
+  background: #f1f5f9;
+  color: #94a3b8;
+  cursor: not-allowed;
+}
+.field-input::placeholder {
+  color: #94a3b8;
+}
+.field-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #334155;
+  margin-bottom: 6px;
+  display: block;
+}
+.static-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #64748b;
+}
+.static-value {
+  font-size: 15px;
+  color: #0f172a;
+  margin-top: 3px;
+}
+.btn-icon-hover:hover {
+  background: #f1f5f9;
+}
+.toast {
+  animation: toastIn 200ms ease;
+}
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+</style>

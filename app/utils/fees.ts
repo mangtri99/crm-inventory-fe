@@ -19,7 +19,7 @@ export const FEE_SEED: Fee[] = [
 ]
 
 function clone(f: Fee): Fee {
-  return { id: f.id, name: f.name, description: f.description || '', system: !!f.system }
+  return { id: f.id, name: f.name, icon: f.icon, description: f.description || '', system: !!f.system }
 }
 
 export function loadFees(): Fee[] {

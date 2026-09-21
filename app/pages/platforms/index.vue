@@ -36,7 +36,7 @@ function showToast(msg: string) {
 }
 
 function editHref(id: string) {
-  return { path: '/platforms/create', query: { id } }
+  return { path: '/platforms/config', query: { id } }
 }
 
 // ── delete ──
@@ -87,12 +87,6 @@ const deleteCancelLabel = computed(() => deleteBlocked.value ? 'Close' : 'Cancel
         </p>
       </div>
       <div class="flex items-center gap-2.5">
-        <NuxtLink
-          to="/platforms/configuration"
-          class="border border-slate-200 bg-white text-slate-700 text-[15px] font-semibold px-4 py-2.5 rounded-lg cursor-pointer inline-flex items-center gap-1.5 no-underline hover:bg-slate-50 transition-colors"
-        >
-          <UIcon name="i-lucide-settings" class="w-[15px] h-[15px]" /> Configuration
-        </NuxtLink>
         <NuxtLink
           to="/platforms/create"
           class="border-none bg-green-500 text-white text-[15px] font-bold px-[18px] py-2.5 rounded-lg cursor-pointer inline-flex items-center gap-1.5 no-underline shadow-sm hover:bg-green-600 transition-colors"

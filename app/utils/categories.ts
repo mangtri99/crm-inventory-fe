@@ -70,6 +70,18 @@ export function categoryChildren(list: Category[], id: string | null): Category[
   return list.filter(c => c.parentId === id)
 }
 
+// Port of the store's `depthOf`: 0 for a root category, +1 per ancestor.
+export function categoryDepthOf(list: Category[], id: string | null): number {
+  let depth = 0
+  let guard = 0
+  let c = categoryById(list, id)
+  while (c && c.parentId && guard++ < 20) {
+    depth++
+    c = categoryById(list, c.parentId)
+  }
+  return depth
+}
+
 export function categoryPathById(list: Category[], id: string): string {
   const parts: string[] = []
   let guard = 0

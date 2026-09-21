@@ -62,6 +62,13 @@ export function attributeNames(list: AttributeDef[]): string[] {
   return list.map(a => a.name)
 }
 
+// Input type chosen on the Attributes page — drives which value editor the
+// Create form renders. Legacy rows with no type behave as 'Select'.
+export function attributeTypeFor(list: AttributeDef[], name: string): string {
+  const def = list.find(a => a.name === name)
+  return (def && def.type) || 'Select'
+}
+
 export function attributeValuesFor(list: AttributeDef[], name: string): string[] {
   const def = list.find(a => a.name === name)
   return def ? def.values.slice() : []

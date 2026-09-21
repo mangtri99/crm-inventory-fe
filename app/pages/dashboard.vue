@@ -2,54 +2,175 @@
 import type {
   Category,
   DashStat,
-  FilterField,
-  FilterRule,
   Platform,
-  ProductRow
+  ProductType,
+  StoredProduct
 } from '~/types'
 
 useHead({ title: 'Dashboard — Vertex' })
 
 const router = useRouter()
 
+// ── seed catalog (design's SEED_PRODUCTS) ──
+// Written to `vertex_products` on first mount when the store is empty, so the
+// dashboard, Product Detail and Variant Detail all read the same records.
+const SEED_PRODUCTS: StoredProduct[] = [
+  {
+    id: 'p_tourist',
+    name: 'Tourist SIM 15GB',
+    sku: 'SKU-2000',
+    category: 'SIM Card',
+    categoryId: 'c_sim',
+    status: 'Active',
+    productType: 'variant',
+    hasVariants: true,
+    variantCount: 6,
+    platformIds: ['p_sp', 'p_sk'],
+    attributes: [{ name: 'Data', values: ['15GB'] }, { name: 'Duration', values: ['8 Days', '16 Days', '31 Days'] }],
+    variants: [
+      { name: '15GB / 8 Days', sku: 'SKU-2000-01', price: '24', stock: '42', active: true },
+      { name: '15GB / 16 Days', sku: 'SKU-2000-02', price: '32', stock: '28', active: true },
+      { name: '15GB / 31 Days', sku: 'SKU-2000-03', price: '44', stock: '12', active: false }
+    ]
+  },
+  {
+    id: 'p_unlimited',
+    name: 'Unlimited Data Plan 30D',
+    sku: 'SKU-2003',
+    category: 'Data Plan',
+    categoryId: 'c_data',
+    status: 'Active',
+    productType: 'single',
+    hasVariants: false,
+    variantCount: 0,
+    platformIds: ['p_sk'],
+    attributes: [],
+    variants: []
+  },
+  {
+    id: 'p_wifi',
+    name: 'Pocket WiFi Router X1',
+    sku: 'SKU-2002',
+    category: 'WiFi',
+    categoryId: 'c_wifi',
+    status: 'Active',
+    productType: 'variant',
+    hasVariants: true,
+    variantCount: 4,
+    platformIds: ['p_sp'],
+    attributes: [{ name: 'Color', values: ['Black', 'White', 'Blue', 'Green'] }],
+    variants: [
+      { name: 'Black', sku: 'SKU-2002-01', price: '60', stock: '15', active: true },
+      { name: 'White', sku: 'SKU-2002-02', price: '60', stock: '9', active: true },
+      { name: 'Blue', sku: 'SKU-2002-03', price: '62', stock: '4', active: true },
+      { name: 'Green', sku: 'SKU-2002-04', price: '62', stock: '0', active: false }
+    ]
+  },
+  {
+    id: 'p_bundle',
+    name: 'Travel Connectivity Bundle',
+    sku: 'SKU-2006',
+    category: 'SIM Card',
+    categoryId: 'c_sim',
+    status: 'Active',
+    productType: 'bundle',
+    hasVariants: false,
+    variantCount: 0,
+    platformIds: ['p_sp', 'p_sk'],
+    attributes: [],
+    variants: []
+  },
+  {
+    id: 'p_esim',
+    name: 'eSIM Global 5GB',
+    sku: 'SKU-2005',
+    category: 'SIM Card',
+    categoryId: 'c_sim',
+    status: 'Inactive',
+    productType: 'single',
+    hasVariants: false,
+    variantCount: 0,
+    platformIds: ['p_sp'],
+    attributes: [],
+    variants: []
+  },
+  {
+    id: 'p_prepaid',
+    name: 'Prepaid Data Plan 7D',
+    sku: 'SKU-2004',
+    category: 'Data Plan',
+    categoryId: 'c_data',
+    status: 'Active',
+    productType: 'variant',
+    hasVariants: true,
+    variantCount: 3,
+    platformIds: ['p_sk'],
+    attributes: [{ name: 'Data', values: ['3GB', '5GB', '10GB'] }],
+    variants: [
+      { name: '3GB', sku: 'SKU-2004-01', price: '12', stock: '30', active: true },
+      { name: '5GB', sku: 'SKU-2004-02', price: '18', stock: '22', active: true },
+      { name: '10GB', sku: 'SKU-2004-03', price: '28', stock: '11', active: true }
+    ]
+  }
+]
+
 // ── reactive state (mirrors the design's DCLogic component state) ──
 const search = ref('')
 const filtersOpen = ref(false)
 const page = ref(1)
 const moreHoverKey = ref<string | null>(null)
+const expandedKeys = reactive<Record<string, boolean>>({})
+const toast = ref<string | null>(null)
+
+const catFilter = ref('')
+const platFilter = ref('')
+const typeFilter = ref('')
+const statusFilter = ref('')
 
 const categories = ref<Category[]>([])
 const platforms = ref<Platform[]>([])
-// products persisted by the "Create New Product" screen; browser-only.
-const storedProducts = ref<ProductRow[]>([])
+// Seeded so SSR and the first client render agree; replaced with the real
+// store on mount.
+const storedProducts = ref<StoredProduct[]>(SEED_PRODUCTS)
 const nowTs = ref(0)
 
-let ridCounter = 0
-const nextRid = () => 'r' + (++ridCounter)
-
-// Filters start pre-populated with four disabled-by-value rules, matching
-// the design's componentDidMount seed (empty value => not yet "active").
-const rules = ref<FilterRule[]>([
-  { id: nextRid(), field: 'variants', operator: 'is', value: '', enabled: true },
-  { id: nextRid(), field: 'productType', operator: 'is', value: '', enabled: true },
-  { id: nextRid(), field: 'platform', operator: 'is', value: '', enabled: true },
-  { id: nextRid(), field: 'status', operator: 'is', value: '', enabled: true }
-])
+let toastTimer: ReturnType<typeof setTimeout> | undefined
 
 // SSR-safe browser reads happen only after mount.
 onMounted(() => {
   categories.value = loadCategories()
   platforms.value = loadPlatforms()
   nowTs.value = Date.now()
+
   try {
     const raw = JSON.parse(localStorage.getItem('vertex_products') || '[]')
-    if (Array.isArray(raw)) storedProducts.value = raw
+    if (Array.isArray(raw) && raw.length) {
+      storedProducts.value = raw
+    } else {
+      localStorage.setItem('vertex_products', JSON.stringify(SEED_PRODUCTS))
+      storedProducts.value = SEED_PRODUCTS
+    }
   } catch {
     // ignore malformed storage
   }
+
+  try {
+    const msg = sessionStorage.getItem('vertex_toast')
+    if (msg) {
+      sessionStorage.removeItem('vertex_toast')
+      toast.value = msg
+      toastTimer = setTimeout(() => {
+        toast.value = null
+      }, 3000)
+    }
+  } catch {
+    // sessionStorage unavailable
+  }
 })
 
-// ── static demo data ──
+onBeforeUnmount(() => clearTimeout(toastTimer))
+
+// ── summary tiles ──
 const stats: DashStat[] = [
   { label: 'Total Products', value: '148', delta: '+12 this month', deltaColor: '#00a155', icon: 'i-lucide-package', iconBg: '#ecfdf5', iconColor: '#00a155' },
   { label: 'Active', value: '121', delta: '82% of catalog', deltaColor: '#64748b', icon: 'i-lucide-circle-check', iconBg: '#ecfdf5', iconColor: '#00a155' },
@@ -57,76 +178,38 @@ const stats: DashStat[] = [
   { label: 'Low Stock', value: '9', delta: 'Needs attention', deltaColor: '#dc2626', icon: 'i-lucide-triangle-alert', iconBg: '#fef2f2', iconColor: '#dc2626' }
 ]
 
-interface DemoProduct {
+// ── enriched rows ──
+interface VariantRow {
   name: string
   sku: string
-  category: string
-  status: 'Active' | 'Inactive'
-  productType: 'single' | 'variant' | 'bundle'
-  hasVariants: boolean
-  variantCount: number
-  platformIds: string[]
+  subLabel: string
+  statusLabel: string
+  active: boolean
+  onView: () => void
 }
 
-const demoProducts: DemoProduct[] = [
-  { name: 'Tourist SIM 15GB', sku: 'SKU-2000', category: 'SIM Card', status: 'Active', productType: 'single', hasVariants: true, variantCount: 6, platformIds: ['p_sp', 'p_sk'] },
-  { name: 'Unlimited Data Plan 30D', sku: 'SKU-2003', category: 'Data Plan', status: 'Active', productType: 'single', hasVariants: false, variantCount: 0, platformIds: ['p_sk'] },
-  { name: 'Pocket WiFi Router X1', sku: 'SKU-2002', category: 'WiFi', status: 'Active', productType: 'single', hasVariants: true, variantCount: 4, platformIds: ['p_sp'] },
-  { name: 'Travel Connectivity Bundle', sku: 'SKU-2006', category: 'SIM Card', status: 'Active', productType: 'bundle', hasVariants: false, variantCount: 0, platformIds: ['p_sp', 'p_sk'] },
-  { name: 'eSIM Global 5GB', sku: 'SKU-2005', category: 'SIM Card', status: 'Inactive', productType: 'single', hasVariants: false, variantCount: 0, platformIds: ['p_sp'] },
-  { name: 'Prepaid Data Plan 7D', sku: 'SKU-2004', category: 'Data Plan', status: 'Active', productType: 'single', hasVariants: true, variantCount: 3, platformIds: ['p_sk'] }
-]
-
-// ── filter field definitions ──
-interface FieldOption {
-  value: string
-  label: string
-}
-interface FieldDef {
-  key: FilterField
-  label: string
-  type: 'text' | 'choice'
-  options?: FieldOption[]
-}
-
-const fieldDefs = computed<FieldDef[]>(() => {
-  const cats = categories.value
-  const plats = platforms.value
-  return [
-    { key: 'name', label: 'Product Name', type: 'text' },
-    { key: 'variants', label: 'Variants', type: 'choice', options: [{ value: 'yes', label: 'Has variants' }, { value: 'no', label: 'No variants' }] },
-    { key: 'sku', label: 'SKU', type: 'text' },
-    { key: 'category', label: 'Category', type: 'choice', options: flattenCategories(cats).map(o => ({ value: o.id, label: (o.depth ? '— ' : '') + o.name })) },
-    { key: 'productType', label: 'Type', type: 'choice', options: [{ value: 'single', label: 'Single' }, { value: 'variant', label: 'Variant' }, { value: 'bundle', label: 'Bundle' }] },
-    { key: 'platform', label: 'Platforms', type: 'choice', options: plats.map(p => ({ value: p.id, label: p.name })) },
-    { key: 'status', label: 'Status', type: 'choice', options: [{ value: 'Active', label: 'Active' }, { value: 'Inactive', label: 'Inactive' }] }
-  ]
-})
-
-const defByKey = (k: FilterField): FieldDef => fieldDefs.value.find(f => f.key === k) || fieldDefs.value[0]!
-
-// ── enriched rows (stored products first, then demo) ──
 interface EnrichedRow {
   key: string
   name: string
   sku: string
   status: 'Active' | 'Inactive'
-  productType: 'single' | 'variant' | 'bundle'
+  productType: ProductType
   typeLabel: string
   hasVariants: boolean
   variantCount: number
-  noVariants: boolean
   isNew: boolean
   image?: string
   catId: string | null
-  categoryLabel: string
+  categoryId?: string
   productCategory: string
+  categoryLabel: string
   platformIdList: string[]
   platformChips: string[]
   platformMore: boolean
   platformMoreLabel: string
   platformMoreTitle: string
   hasPlatforms: boolean
+  variantRows: VariantRow[]
   onViewDetail: () => void
 }
 
@@ -134,131 +217,118 @@ const allRows = computed<EnrichedRow[]>(() => {
   const cats = categories.value
   const plats = platforms.value
 
-  const stored: EnrichedRow[] = storedProducts.value.map((r) => {
+  return storedProducts.value.map((r) => {
     const t0 = r.productType || 'single'
-    const migType = t0 === 'variant' ? 'variant' : (t0 === 'bundle' ? 'bundle' : ((r.hasVariants || (r.variantCount && r.variantCount > 0)) ? 'variant' : 'single'))
-    const hasVariants = t0 === 'variant' ? true : (r.hasVariants !== undefined ? !!r.hasVariants : (r.variantCount || 0) > 0)
-    const vCount = r.variantCount || 0
-    return enrich({
-      key: r.id || r.sku,
+    const migType: ProductType = t0 === 'variant'
+      ? 'variant'
+      : (t0 === 'bundle' ? 'bundle' : ((r.hasVariants || (r.variants && r.variants.length)) ? 'variant' : 'single'))
+    const hasVariants = t0 === 'variant'
+      ? true
+      : (r.hasVariants !== undefined ? !!r.hasVariants : !!(r.variants && r.variants.length > 0))
+    const vCount = r.variants?.length ? r.variants.length : (r.variantCount || 0)
+
+    let cat: Category | null = null
+    if (r.categoryId) cat = categoryById(cats, r.categoryId)
+    if (!cat) cat = categoryByName(cats, r.category || '')
+
+    const ids = r.platformIds || []
+    const names = (r.platformNames && r.platformNames.length)
+      ? r.platformNames.slice()
+      : ids.map(id => platformById(plats, id)?.name).filter((n): n is string => !!n)
+
+    const key = r.id || r.sku
+    // Real variant records when present, otherwise placeholders so a product
+    // that only carries a count still expands.
+    let vs = (hasVariants && r.variants?.length) ? r.variants : []
+    if (!vs.length && hasVariants && vCount > 0) {
+      vs = Array.from({ length: vCount }, (_, i) => ({
+        name: r.name + ' — Variant ' + (i + 1),
+        sku: (r.sku || 'SKU') + '-' + String(i + 1).padStart(2, '0'),
+        price: '',
+        stock: '',
+        active: r.status !== 'Inactive'
+      }))
+    }
+
+    return {
+      key,
       name: r.name,
       sku: r.sku,
       status: r.status,
       productType: migType,
+      typeLabel: migType === 'bundle' ? 'Bundle' : (migType === 'variant' ? 'Variant' : 'Single'),
       hasVariants,
       variantCount: hasVariants ? vCount : 0,
       isNew: !r.createdAt || (nowTs.value - r.createdAt) < 24 * 60 * 60 * 1000,
       image: r.image,
-      productCategory: r.category || '',
+      catId: cat ? cat.id : null,
       categoryId: r.categoryId,
-      categoryPath: r.categoryPath,
-      platformIds: r.platformIds || [],
-      platformNames: r.platformNames
-    }, cats, plats, () => { router.push({ path: '/products/detail', query: { id: r.id || '' } }) })
+      productCategory: r.category || '',
+      categoryLabel: r.categoryPath || (cat ? categoryPathById(cats, cat.id) : (r.category || '—')),
+      platformIdList: ids,
+      platformChips: names.slice(0, 2),
+      platformMore: names.length > 2,
+      platformMoreLabel: names.length > 2 ? ('+' + (names.length - 2)) : '',
+      platformMoreTitle: names.length > 2 ? names.slice(2).join(', ') : '',
+      hasPlatforms: names.length > 0,
+      variantRows: vs.map(v => ({
+        name: v.name,
+        sku: v.sku || '—',
+        subLabel: (v.price !== '' && v.price != null ? '¥' + Number(v.price).toFixed(2) : '—')
+          + ' · Qty ' + (v.stock !== '' && v.stock != null ? v.stock : '0'),
+        statusLabel: v.active ? 'Active' : 'Inactive',
+        active: v.active,
+        onView: () => {
+          router.push({ path: '/products/variant-detail', query: { product: r.id || 'demo', variant: v.name } })
+        }
+      })),
+      onViewDetail: () => { router.push({ path: '/products/detail', query: { id: r.id || '' } }) }
+    }
   })
-
-  const demo: EnrichedRow[] = demoProducts.map(p => enrich({
-    key: p.sku,
-    name: p.name,
-    sku: p.sku,
-    status: p.status,
-    productType: p.productType,
-    hasVariants: p.hasVariants,
-    variantCount: p.hasVariants ? p.variantCount : 0,
-    isNew: false,
-    productCategory: p.category,
-    platformIds: p.platformIds
-  }, cats, plats, () => { router.push('/products/detail') }))
-
-  return stored.concat(demo)
 })
 
-interface EnrichInput {
-  key: string
-  name: string
-  sku: string
-  status: 'Active' | 'Inactive'
-  productType: 'single' | 'variant' | 'bundle'
-  hasVariants: boolean
-  variantCount: number
-  isNew: boolean
-  image?: string
-  productCategory: string
-  categoryId?: string
-  categoryPath?: string
-  platformIds: string[]
-  platformNames?: string[]
-}
+// ── filter dropdown options (only values actually present in the table) ──
+const categoryOptions = computed(() => flattenCategories(categories.value)
+  .filter(o => allRows.value.some(r => (r.categoryId || r.productCategory) === o.id || r.productCategory === o.name))
+  .map(o => ({ value: o.id, label: o.name })))
 
-function enrich(r: EnrichInput, cats: Category[], plats: Platform[], onViewDetail: () => void): EnrichedRow {
-  let cat: Category | null = null
-  if (r.categoryId) cat = categoryById(cats, r.categoryId)
-  if (!cat) cat = categoryByName(cats, r.productCategory)
-  const catId = cat ? cat.id : null
-  const categoryLabel = r.categoryPath || (cat ? categoryPathById(cats, cat.id) : (r.productCategory || '—'))
+const platformOptions = computed(() => platforms.value
+  .filter(p => allRows.value.some(r => r.platformIdList.indexOf(p.id) !== -1))
+  .map(p => ({ value: p.id, label: p.name })))
 
-  const ids = r.platformIds || []
-  const names = (r.platformNames && r.platformNames.length)
-    ? r.platformNames.slice()
-    : ids.map(id => platformById(plats, id)?.name).filter((n): n is string => !!n)
+const hasActiveFilters = computed(() => !!(catFilter.value || platFilter.value || typeFilter.value || statusFilter.value))
+const activeFilterCount = computed(() => [catFilter.value, platFilter.value, typeFilter.value, statusFilter.value].filter(Boolean).length)
 
-  return {
-    key: r.key,
-    name: r.name,
-    sku: r.sku,
-    status: r.status,
-    productType: r.productType,
-    typeLabel: r.productType === 'bundle' ? 'Bundle' : (r.productType === 'variant' ? 'Variant' : 'Single'),
-    hasVariants: r.hasVariants,
-    variantCount: r.variantCount,
-    noVariants: !r.hasVariants,
-    isNew: r.isNew,
-    image: r.image,
-    catId,
-    categoryLabel,
-    productCategory: r.productCategory,
-    platformIdList: ids,
-    platformChips: names.slice(0, 2),
-    platformMore: names.length > 2,
-    platformMoreLabel: names.length > 2 ? ('+' + (names.length - 2)) : '',
-    platformMoreTitle: names.length > 2 ? names.slice(2).join(', ') : '',
-    hasPlatforms: names.length > 0,
-    onViewDetail
-  }
-}
-
-// ── filtering ──
-const activeRules = computed(() => rules.value.filter(r => r.enabled && r.value !== '' && r.value != null))
-
-function matchRule(row: EnrichedRow, rule: FilterRule): boolean {
-  const contains = (a: string, b: string) => (a || '').toLowerCase().includes((b || '').toLowerCase())
-  const isEq = (a: string, b: string) => (a || '').toLowerCase() === (b || '').toLowerCase()
-  switch (rule.field) {
-    case 'category': return categorySubtreeIds(categories.value, rule.value).indexOf(row.catId || '') !== -1
-    case 'platform': return row.platformIdList.indexOf(rule.value) !== -1
-    case 'productType': return (row.productType || 'single') === rule.value
-    case 'status': return row.status === rule.value
-    case 'variants': return rule.value === 'yes' ? !!row.hasVariants : !row.hasVariants
-    case 'name': return rule.operator === 'is' ? isEq(row.name, rule.value) : contains(row.name, rule.value)
-    case 'sku': return rule.operator === 'is' ? isEq(row.sku, rule.value) : contains(row.sku, rule.value)
-    default: return true
-  }
+function clearFilters() {
+  catFilter.value = ''
+  platFilter.value = ''
+  typeFilter.value = ''
+  statusFilter.value = ''
+  page.value = 1
 }
 
 const filteredRows = computed(() => {
   const q = search.value.trim().toLowerCase()
-  const rs = activeRules.value
+  const catF = catFilter.value
+  const platF = platFilter.value
+  const typeF = typeFilter.value
+  const statusF = statusFilter.value
+
   return allRows.value.filter((r) => {
     if (q && !(r.name.toLowerCase().includes(q) || r.sku.toLowerCase().includes(q))) return false
-    for (const rule of rs) {
-      if (!matchRule(r, rule)) return false
+    if (catF && (r.categoryId || r.productCategory) !== catF && r.productCategory !== catF) return false
+    if (platF && r.platformIdList.indexOf(platF) === -1) return false
+    if (typeF) {
+      const t = r.productType === 'bundle' ? 'bundle' : ((r.hasVariants || r.productType === 'variant') ? 'variant' : 'single')
+      if (t !== typeF) return false
     }
+    if (statusF && r.status !== statusF) return false
     return true
   })
 })
 
 // ── pagination ──
-const pageSize = 5
+const pageSize = 15
 const totalPages = computed(() => Math.max(1, Math.ceil(filteredRows.value.length / pageSize)))
 const clampedPage = computed(() => Math.min(page.value, totalPages.value))
 const startIdx = computed(() => (clampedPage.value - 1) * pageSize)
@@ -273,67 +343,8 @@ const rangeFrom = computed(() => filteredRows.value.length === 0 ? 0 : startIdx.
 const rangeTo = computed(() => startIdx.value + pagedRows.value.length)
 const rangeLabel = computed(() => `${rangeFrom.value}–${rangeTo.value} of ${filteredRows.value.length} row(s)`)
 
-// ── filter rule rows for the popover ──
-interface RuleRow {
-  id: string
-  field: FilterField
-  fieldOptions: FieldOption[]
-  isText: boolean
-  isChoice: boolean
-  value: string
-  valueOptions: FieldOption[]
-  enabled: boolean
-}
-
-const ruleRows = computed<RuleRow[]>(() => rules.value.map((rule) => {
-  const def = defByKey(rule.field)
-  const isText = def.type === 'text'
-  return {
-    id: rule.id,
-    field: rule.field,
-    fieldOptions: fieldDefs.value.map(f => ({ value: f.key, label: f.label })),
-    isText,
-    isChoice: !isText,
-    value: rule.value,
-    valueOptions: isText ? [] : (def.options || []),
-    enabled: rule.enabled
-  }
-}))
-
-function valueLabelOf(rule: FilterRule): string {
-  const def = defByKey(rule.field)
-  if (def.type === 'choice') {
-    const o = (def.options || []).find(x => x.value === rule.value)
-    return o ? o.label.replace('— ', '') : rule.value
-  }
-  return rule.value
-}
-
-const filterChips = computed(() => activeRules.value.map(rule => ({
-  id: rule.id,
-  label: defByKey(rule.field).label + ' ' + rule.operator + ' ' + valueLabelOf(rule)
-})))
-
-// ── rule mutations ──
-function updateRule(id: string, patch: Partial<FilterRule>) {
-  rules.value = rules.value.map(r => r.id === id ? { ...r, ...patch } : r)
-  page.value = 1
-}
-function changeRuleField(id: string, field: FilterField) {
-  const def = fieldDefs.value.find(f => f.key === field)
-  updateRule(id, { field, operator: def && def.type === 'text' ? 'contains' : 'is', value: '' })
-}
-function addRule() {
-  rules.value = [...rules.value, { id: nextRid(), field: 'category', operator: 'is', value: '', enabled: true }]
-  page.value = 1
-}
-function removeRule(id: string) {
-  rules.value = rules.value.filter(r => r.id !== id)
-  page.value = 1
-}
-function clearRules() {
-  rules.value = []
-  page.value = 1
+function toggleExpand(key: string) {
+  expandedKeys[key] = !expandedKeys[key]
 }
 
 // ── derived UI helpers ──
@@ -343,8 +354,6 @@ function statusBadgeClass(status: string) {
     : 'bg-slate-100 text-slate-500 border-slate-200'
 }
 
-const hasActiveFilters = computed(() => activeRules.value.length > 0)
-
 function onNewProduct() {
   router.push('/products/new')
 }
@@ -352,6 +361,15 @@ function onNewProduct() {
 
 <template>
   <div class="px-8 pt-7 pb-20">
+    <!-- TOAST -->
+    <div
+      v-if="toast"
+      class="fixed bottom-6 right-6 z-[300] bg-white border border-slate-200 border-l-4 border-l-green-500 rounded-[10px] shadow-[0_10px_30px_rgba(0,0,0,0.14)] px-[18px] py-3.5 flex items-center gap-3"
+    >
+      <UIcon name="i-lucide-circle-check" class="w-5 h-5 text-green-600" />
+      <span class="text-[15px] font-semibold text-slate-900">{{ toast }}</span>
+    </div>
+
     <!-- HEADER -->
     <div class="flex items-start justify-between gap-4 mb-6 flex-wrap">
       <div>
@@ -387,10 +405,10 @@ function onNewProduct() {
             <UIcon :name="stat.icon" class="w-4 h-4" />
           </div>
         </div>
-        <div class="text-[26px] font-bold text-slate-900 leading-none">
+        <div class="text-[34px] font-bold text-slate-900 leading-none">
           {{ stat.value }}
         </div>
-        <div class="text-sm mt-2 font-semibold" :style="{ color: stat.deltaColor }">
+        <div class="text-[15px] mt-2 font-semibold" :style="{ color: stat.deltaColor }">
           {{ stat.delta }}
         </div>
       </div>
@@ -411,7 +429,7 @@ function onNewProduct() {
 
       <!-- search + filters -->
       <div class="px-5 py-3.5 border-b border-slate-200">
-        <div class="flex items-center gap-3 flex-wrap">
+        <div class="flex items-center gap-2.5 flex-wrap">
           <div class="relative flex-1 min-w-[220px]">
             <UIcon name="i-lucide-search" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
             <input
@@ -423,7 +441,7 @@ function onNewProduct() {
           </div>
           <div class="relative flex-shrink-0">
             <button
-              class="relative inline-flex items-center gap-2 bg-white text-slate-700 text-[15px] font-semibold px-4 py-[9px] rounded-lg cursor-pointer border transition-colors"
+              class="relative inline-flex items-center gap-2 bg-white text-slate-700 text-[15px] font-semibold px-4 py-[9px] rounded-lg cursor-pointer border flex-shrink-0 transition-colors"
               :class="[
                 (filtersOpen || hasActiveFilters) ? 'border-green-500' : 'border-slate-200',
                 filtersOpen ? 'ring-[3px] ring-green-500/15' : ''
@@ -435,129 +453,98 @@ function onNewProduct() {
               <span
                 v-if="hasActiveFilters"
                 class="inline-flex items-center justify-center min-w-5 h-5 px-1.5 rounded-full bg-green-500 text-white text-xs font-bold"
-              >{{ activeRules.length }}</span>
+              >{{ activeFilterCount }}</span>
+              <UIcon
+                :name="filtersOpen ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'"
+                class="w-[15px] h-[15px] text-slate-400"
+              />
             </button>
 
             <!-- popover -->
             <template v-if="filtersOpen">
               <div class="fixed inset-0 z-40" @click="filtersOpen = false" />
-              <div class="absolute top-[calc(100%+8px)] right-0 z-50 bg-white border border-slate-200 rounded-xl shadow-[0_12px_34px_rgba(0,0,0,0.16)] w-[520px] max-w-[88vw]">
-                <div class="px-[18px] pt-4 pb-1">
-                  <div class="text-[13px] font-semibold text-slate-500 mb-3">
-                    In this table show products
-                  </div>
-                  <div v-if="rules.length" class="flex flex-col gap-2.5">
-                    <div
-                      v-for="rule in ruleRows"
-                      :key="rule.id"
-                      class="flex items-center gap-2 flex-nowrap"
+              <div class="absolute top-[calc(100%+8px)] right-0 z-50 bg-white border border-slate-200 rounded-xl shadow-[0_12px_34px_rgba(0,0,0,0.16)] w-[300px] p-4">
+                <div class="flex flex-col gap-3.5">
+                  <div>
+                    <label class="text-[13px] font-semibold text-slate-700 mb-1.5 block">Category</label>
+                    <select
+                      v-model="catFilter"
+                      class="ff-select"
+                      @change="page = 1"
                     >
-                      <div class="w-[150px] flex-shrink-0">
-                        <select
-                          class="ff-select"
-                          :value="rule.field"
-                          @change="changeRuleField(rule.id, ($event.target as HTMLSelectElement).value as FilterField)"
-                        >
-                          <option v-for="f in rule.fieldOptions" :key="f.value" :value="f.value">
-                            {{ f.label }}
-                          </option>
-                        </select>
-                      </div>
-                      <div v-if="rule.isChoice" class="flex-1 min-w-0">
-                        <select
-                          class="ff-select"
-                          :value="rule.value"
-                          @change="updateRule(rule.id, { value: ($event.target as HTMLSelectElement).value })"
-                        >
-                          <option value="">
-                            Select value
-                          </option>
-                          <option v-for="o in rule.valueOptions" :key="o.value" :value="o.value">
-                            {{ o.label }}
-                          </option>
-                        </select>
-                      </div>
-                      <input
-                        v-else
-                        :value="rule.value"
-                        placeholder="Enter value"
-                        class="flex-1 min-w-0 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 outline-none focus:border-green-500"
-                        @input="updateRule(rule.id, { value: ($event.target as HTMLInputElement).value })"
-                      >
-                      <label class="inline-flex items-center flex-shrink-0 cursor-pointer px-0.5" title="Enable rule">
-                        <input
-                          type="checkbox"
-                          :checked="rule.enabled"
-                          class="w-4 h-4 cursor-pointer accent-green-500"
-                          @change="updateRule(rule.id, { enabled: ($event.target as HTMLInputElement).checked })"
-                        >
-                      </label>
-                      <button
-                        class="border border-slate-200 bg-white text-slate-400 w-[34px] h-[34px] rounded-lg cursor-pointer inline-flex items-center justify-center flex-shrink-0 hover:text-red-600 hover:border-red-200 transition-colors"
-                        title="Delete rule"
-                        @click="removeRule(rule.id)"
-                      >
-                        <UIcon name="i-lucide-trash-2" class="w-[15px] h-[15px]" />
-                      </button>
-                    </div>
+                      <option value="">
+                        All categories
+                      </option>
+                      <option v-for="o in categoryOptions" :key="o.value" :value="o.value">
+                        {{ o.label }}
+                      </option>
+                    </select>
                   </div>
-                  <div
-                    v-else
-                    class="p-[18px] text-center text-sm text-slate-400 border-[1.5px] border-dashed border-slate-200 rounded-[10px]"
-                  >
-                    No filters yet. Add a rule to narrow the list.
+                  <div>
+                    <label class="text-[13px] font-semibold text-slate-700 mb-1.5 block">Platform</label>
+                    <select
+                      v-model="platFilter"
+                      class="ff-select"
+                      @change="page = 1"
+                    >
+                      <option value="">
+                        All platforms
+                      </option>
+                      <option v-for="o in platformOptions" :key="o.value" :value="o.value">
+                        {{ o.label }}
+                      </option>
+                    </select>
                   </div>
-                </div>
-                <div class="flex items-center justify-between gap-3 px-[18px] py-3.5">
+                  <div>
+                    <label class="text-[13px] font-semibold text-slate-700 mb-1.5 block">Product Type</label>
+                    <select
+                      v-model="typeFilter"
+                      class="ff-select"
+                      @change="page = 1"
+                    >
+                      <option value="">
+                        All types
+                      </option>
+                      <option value="single">
+                        Single
+                      </option>
+                      <option value="variant">
+                        Variant
+                      </option>
+                      <option value="bundle">
+                        Bundle
+                      </option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="text-[13px] font-semibold text-slate-700 mb-1.5 block">Status</label>
+                    <select
+                      v-model="statusFilter"
+                      class="ff-select"
+                      @change="page = 1"
+                    >
+                      <option value="">
+                        All statuses
+                      </option>
+                      <option value="Active">
+                        Active
+                      </option>
+                      <option value="Inactive">
+                        Inactive
+                      </option>
+                    </select>
+                  </div>
                   <button
-                    class="inline-flex items-center gap-1.5 border-none bg-transparent text-green-600 text-sm font-bold cursor-pointer p-1"
-                    @click="addRule"
-                  >
-                    <UIcon name="i-lucide-plus" class="w-[15px] h-[15px]" /> Add new
-                  </button>
-                  <button
-                    v-if="rules.length"
-                    class="inline-flex items-center gap-1.5 border-none bg-transparent text-red-600 text-sm font-semibold cursor-pointer p-1"
-                    @click="clearRules"
+                    v-if="hasActiveFilters"
+                    class="border border-slate-200 bg-white text-slate-500 text-sm font-semibold cursor-pointer p-2 rounded-lg inline-flex items-center justify-center gap-1.5 hover:bg-slate-50 transition-colors"
+                    @click="clearFilters"
                   >
                     <UIcon name="i-lucide-x" class="w-3.5 h-3.5" /> Clear all
-                  </button>
-                </div>
-                <div class="flex justify-end gap-2.5 px-[18px] py-3 border-t border-slate-100">
-                  <button
-                    class="border-none bg-green-500 text-white text-sm font-bold px-[18px] py-2 rounded-lg cursor-pointer hover:bg-green-600 transition-colors"
-                    @click="filtersOpen = false"
-                  >
-                    Done
                   </button>
                 </div>
               </div>
             </template>
           </div>
-        </div>
-
-        <!-- active filter chips -->
-        <div v-if="hasActiveFilters" class="mt-3 flex flex-wrap gap-2 items-center">
-          <span
-            v-for="chip in filterChips"
-            :key="chip.id"
-            class="inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full py-1 pr-2 pl-3 text-[13px] font-semibold"
-          >
-            {{ chip.label }}
-            <button
-              class="border-none bg-transparent cursor-pointer text-emerald-700 flex items-center p-0.5 rounded-full"
-              title="Remove"
-              @click="removeRule(chip.id)"
-            >
-              <UIcon name="i-lucide-x" class="w-3 h-3" />
-            </button>
-          </span>
-          <button
-            class="border-none bg-transparent text-slate-500 text-[13px] font-semibold cursor-pointer px-1.5 py-1"
-            @click="clearRules"
-          >
-            Clear all
-          </button>
         </div>
       </div>
 
@@ -593,83 +580,142 @@ function onNewProduct() {
             </tr>
           </thead>
           <tbody>
-            <tr
-              v-for="prod in pagedRows"
-              :key="prod.key"
-              class="border-b border-slate-100 hover:bg-slate-50"
-            >
-              <td class="px-5 py-3 whitespace-nowrap">
-                <div class="flex items-center gap-2.5">
-                  <img
-                    v-if="prod.image"
-                    :src="prod.image"
-                    class="w-7 h-7 rounded-md object-cover flex-shrink-0"
-                  >
-                  <span class="text-base font-semibold text-slate-900">{{ prod.name }}</span>
-                  <span
-                    v-if="prod.isNew"
-                    class="inline-flex items-center text-[10px] font-bold tracking-[0.04em] uppercase px-[7px] py-0.5 rounded-full bg-green-500 text-white flex-shrink-0"
-                  >New</span>
-                </div>
-              </td>
-              <td class="px-3 py-3 whitespace-nowrap">
-                <span
-                  v-if="prod.hasVariants"
-                  class="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-green-600 border border-emerald-200"
-                >
-                  <UIcon name="i-lucide-layers" class="w-[11px] h-[11px]" />{{ prod.variantCount }} variants
-                </span>
-                <span v-else class="text-[15px] text-slate-300">—</span>
-              </td>
-              <td class="px-3 py-3 text-[15px] text-slate-500 whitespace-nowrap">
-                {{ prod.sku }}
-              </td>
-              <td class="px-3 py-3 text-[15px] text-slate-700 whitespace-nowrap">
-                {{ prod.categoryLabel }}
-              </td>
-              <td class="px-3 py-3 whitespace-nowrap">
-                <span class="text-sm font-semibold text-slate-700">{{ prod.typeLabel }}</span>
-              </td>
-              <td class="px-3 py-3">
-                <div v-if="prod.hasPlatforms" class="flex flex-wrap gap-1 max-w-[190px]">
-                  <span
-                    v-for="pl in prod.platformChips"
-                    :key="pl"
-                    class="text-xs font-semibold text-slate-600 bg-slate-100 border border-slate-200 rounded-full px-[9px] py-0.5 whitespace-nowrap"
-                  >{{ pl }}</span>
-                  <span
-                    v-if="prod.platformMore"
-                    class="relative inline-flex"
-                    @mouseover="moreHoverKey = prod.sku"
-                    @mouseout="moreHoverKey = null"
-                  >
+            <template v-for="prod in pagedRows" :key="prod.key">
+              <tr class="border-b border-slate-100 hover:bg-slate-50">
+                <td class="px-5 py-3 whitespace-nowrap">
+                  <div class="flex items-center gap-2">
+                    <button
+                      v-if="prod.variantRows.length"
+                      class="border-none bg-transparent cursor-pointer text-slate-500 w-[22px] h-[22px] inline-flex items-center justify-center rounded-md flex-shrink-0 hover:bg-slate-100"
+                      title="Toggle variants"
+                      @click="toggleExpand(prod.key)"
+                    >
+                      <UIcon
+                        :name="expandedKeys[prod.key] ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'"
+                        class="w-4 h-4"
+                      />
+                    </button>
+                    <span v-else class="w-[22px] flex-shrink-0 inline-block" />
+                    <img
+                      v-if="prod.image"
+                      :src="prod.image"
+                      class="w-7 h-7 rounded-md object-cover flex-shrink-0"
+                    >
+                    <span class="text-base font-semibold text-slate-900">{{ prod.name }}</span>
                     <span
-                      class="text-xs font-semibold px-2 py-0.5 rounded-full whitespace-nowrap cursor-default transition-colors"
-                      :class="moreHoverKey === prod.sku ? 'bg-slate-200 text-slate-700' : 'text-slate-400'"
-                    >{{ prod.platformMoreLabel }}</span>
-                    <span
-                      v-if="moreHoverKey === prod.sku"
-                      class="absolute bottom-[calc(100%+6px)] left-1/2 -translate-x-1/2 z-[60] bg-slate-900 text-white text-xs font-medium px-2.5 py-[5px] rounded-md whitespace-nowrap shadow-lg"
-                    >{{ prod.platformMoreTitle }}</span>
+                      v-if="prod.isNew"
+                      class="inline-flex items-center text-[10px] font-bold tracking-[0.04em] uppercase px-[7px] py-0.5 rounded-full bg-green-500 text-white flex-shrink-0"
+                    >New</span>
+                  </div>
+                </td>
+                <td class="px-3 py-3 whitespace-nowrap">
+                  <span
+                    v-if="prod.hasVariants"
+                    class="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-green-600 border border-emerald-200"
+                  >
+                    <UIcon name="i-lucide-layers" class="w-[11px] h-[11px]" />{{ prod.variantCount }} variants
                   </span>
-                </div>
-                <span v-else class="text-[15px] text-slate-300">—</span>
-              </td>
-              <td class="px-3 py-3 whitespace-nowrap">
-                <span
-                  class="inline-block text-sm font-bold px-3 py-[3px] rounded-full border"
-                  :class="statusBadgeClass(prod.status)"
-                >{{ prod.status }}</span>
-              </td>
-              <td class="px-5 py-3 whitespace-nowrap">
-                <button
-                  class="border border-slate-200 bg-white text-slate-700 text-sm font-semibold px-3 py-1.5 rounded-lg cursor-pointer hover:bg-slate-50 transition-colors"
-                  @click="prod.onViewDetail()"
-                >
-                  View Detail
-                </button>
-              </td>
-            </tr>
+                  <span v-else class="text-[15px] text-slate-300">—</span>
+                </td>
+                <td class="px-3 py-3 text-[15px] text-slate-500 whitespace-nowrap">
+                  {{ prod.sku }}
+                </td>
+                <td class="px-3 py-3 text-[15px] text-slate-700 whitespace-nowrap">
+                  {{ prod.categoryLabel }}
+                </td>
+                <td class="px-3 py-3 whitespace-nowrap">
+                  <span class="text-sm font-semibold text-slate-700">{{ prod.typeLabel }}</span>
+                </td>
+                <td class="px-3 py-3">
+                  <div v-if="prod.hasPlatforms" class="flex flex-wrap gap-1 max-w-[190px]">
+                    <span
+                      v-for="pl in prod.platformChips"
+                      :key="pl"
+                      class="text-xs font-semibold text-slate-600 bg-slate-100 border border-slate-200 rounded-full px-[9px] py-0.5 whitespace-nowrap"
+                    >{{ pl }}</span>
+                    <span
+                      v-if="prod.platformMore"
+                      class="relative inline-flex"
+                      @mouseover="moreHoverKey = prod.sku"
+                      @mouseout="moreHoverKey = null"
+                    >
+                      <span
+                        class="text-xs font-semibold px-2 py-0.5 rounded-full whitespace-nowrap cursor-default transition-colors"
+                        :class="moreHoverKey === prod.sku ? 'bg-slate-200 text-slate-700' : 'text-slate-400'"
+                      >{{ prod.platformMoreLabel }}</span>
+                      <span
+                        v-if="moreHoverKey === prod.sku"
+                        class="absolute bottom-[calc(100%+6px)] left-1/2 -translate-x-1/2 z-[60] bg-slate-900 text-white text-xs font-medium px-2.5 py-[5px] rounded-md whitespace-nowrap shadow-lg"
+                      >{{ prod.platformMoreTitle }}</span>
+                    </span>
+                  </div>
+                  <span v-else class="text-[15px] text-slate-300">—</span>
+                </td>
+                <td class="px-3 py-3 whitespace-nowrap">
+                  <span
+                    class="inline-block text-sm font-bold px-3 py-[3px] rounded-full border"
+                    :class="statusBadgeClass(prod.status)"
+                  >{{ prod.status }}</span>
+                </td>
+                <td class="px-5 py-3 whitespace-nowrap">
+                  <button
+                    class="border border-slate-200 bg-white text-slate-700 text-sm font-semibold px-3 py-1.5 rounded-lg cursor-pointer hover:bg-slate-50 transition-colors"
+                    @click="prod.onViewDetail()"
+                  >
+                    View Detail
+                  </button>
+                </td>
+              </tr>
+
+              <!-- expanded variant sub-rows -->
+              <tr
+                v-for="v in (expandedKeys[prod.key] ? prod.variantRows : [])"
+                :key="prod.key + '|' + v.name"
+                class="border-b border-slate-100 bg-neutral-50"
+              >
+                <td class="px-5 py-[9px] whitespace-nowrap">
+                  <div class="flex items-center gap-2 pl-[38px]">
+                    <UIcon name="i-lucide-corner-down-right" class="w-3.5 h-3.5 text-slate-300 flex-shrink-0" />
+                    <div>
+                      <div class="text-sm font-medium text-slate-700">
+                        {{ v.name }}
+                      </div>
+                      <div class="text-xs text-slate-400">
+                        {{ v.subLabel }}
+                      </div>
+                    </div>
+                  </div>
+                </td>
+                <td class="px-3 py-[9px]" />
+                <td class="px-3 py-[9px] text-sm text-slate-500 whitespace-nowrap">
+                  {{ v.sku }}
+                </td>
+                <td class="px-3 py-[9px] text-sm text-slate-300 whitespace-nowrap">
+                  —
+                </td>
+                <td class="px-3 py-[9px] whitespace-nowrap">
+                  <span class="text-[13px] font-semibold text-slate-400">Variant</span>
+                </td>
+                <td class="px-3 py-[9px] text-sm text-slate-300 whitespace-nowrap">
+                  —
+                </td>
+                <td class="px-3 py-[9px] whitespace-nowrap">
+                  <span
+                    class="inline-block text-sm font-bold px-3 py-[3px] rounded-full border"
+                    :class="statusBadgeClass(v.statusLabel)"
+                  >{{ v.statusLabel }}</span>
+                </td>
+                <td class="px-5 py-[9px] whitespace-nowrap">
+                  <button
+                    class="border border-slate-200 bg-white text-slate-700 text-[13px] font-semibold px-2.5 py-[5px] rounded-lg cursor-pointer hover:bg-slate-50 transition-colors"
+                    @click="v.onView()"
+                  >
+                    View
+                  </button>
+                </td>
+              </tr>
+            </template>
+
             <tr v-if="filteredRows.length === 0">
               <td colspan="8" class="px-5 py-12 text-center">
                 <div class="flex flex-col items-center gap-2 text-slate-400">
@@ -729,7 +775,7 @@ function onNewProduct() {
   width: 100%;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
-  padding: 7px 20px 7px 12px;
+  padding: 9px 20px 9px 12px;
   font-size: 14px;
   color: #0f172a;
   background-color: #fff;

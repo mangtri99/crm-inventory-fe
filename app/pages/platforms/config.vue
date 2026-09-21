@@ -1,55 +1,55 @@
 <script setup lang="ts">
-import type { ConfigOverrides, ConfigValue, Platform } from '~/types'
+import type { ConfigValue, ConfigValues, Platform } from '~/types'
 
-useHead({ title: 'Platform Configuration — Vertex' })
+useHead({ title: 'Edit Platform — Vertex' })
 
 const route = useRoute()
+const router = useRouter()
 
-// ── state (mirrors the design's DCLogic state) ──
-const platform = ref<Platform | null>(null)
-const platformId = ref<string | null>(null)
-const overrides = ref<ConfigOverrides>({})
-const defaults = ref(reactive({ ...CONFIG_DEFAULT_SEED }))
+// ── platform + identity ──
+const platforms = ref<Platform[]>(PLATFORM_SEED)
+
+const platform = computed<Platform | null>(() => {
+  const id = typeof route.query.id === 'string' ? route.query.id : ''
+  return (id ? platformById(platforms.value, id) : null) || platforms.value[0] || null
+})
+
+const identity = reactive({ name: '', code: '', url: '' })
+const cfg = ref<ConfigValues>({})
+const errors = reactive<{ name: string, url: string }>({ name: '', url: '' })
+const dirty = ref(false)
+const discardOpen = ref(false)
 const openGroups = reactive<Record<string, boolean>>({ store: true, web: true, contact: true, contactus: true })
-const toast = ref<string | null>(null)
 
-let toastTimer: number | null = null
+// Seed identity + config from whatever platform the route resolves to.
+function hydrate() {
+  const p = platform.value
+  identity.name = p ? p.name : ''
+  identity.code = p ? p.code : ''
+  identity.url = p ? p.url : ''
+  cfg.value = p ? loadPlatformConfig(p.id) : { ...GENERIC_CONFIG_SEED }
+}
 
-// SSR-safe: platform + stored config resolved after mount; server + first
-// client paint render the deterministic seed with no platform selected.
+hydrate()
+
 onMounted(() => {
-  const rawId = route.query.id
-  const id = Array.isArray(rawId) ? rawId[0] : rawId
-  const list = loadPlatforms()
-  const found = id ? platformById(list, id) : null
-  const plat = found || list[0] || null
-  platform.value = plat
-  platformId.value = plat ? plat.id : (id || null)
-  defaults.value = reactive(loadConfigDefaults())
-  overrides.value = platformId.value ? loadConfigOverrides(platformId.value) : {}
-})
-onBeforeUnmount(() => {
-  if (toastTimer !== null) clearTimeout(toastTimer)
+  platforms.value = loadPlatforms()
+  hydrate()
+  dirty.value = false
 })
 
-function setField(key: string, patch: Partial<{ override: boolean, value: ConfigValue }>) {
-  const cur = { ...overrides.value }
-  cur[key] = { override: false, value: '', ...(cur[key] || {}), ...patch }
-  overrides.value = cur
+function setCfg(key: string, value: ConfigValue) {
+  cfg.value = { ...cfg.value, [key]: value }
+  dirty.value = true
+}
+function setIdentity(field: 'name' | 'url', value: string) {
+  identity[field] = value
+  errors[field] = ''
+  dirty.value = true
 }
 
-function switchTrack(on: boolean, locked: boolean) {
-  return `width:40px;height:22px;border-radius:999px;border:none;cursor:${locked ? 'not-allowed' : 'pointer'};background:${on ? '#00c16a' : '#e2e8f0'};position:relative;padding:2px;display:inline-flex;align-items:center;opacity:${locked ? '0.6' : '1'};transition:background 150ms ease;`
-}
-function switchKnob(on: boolean) {
-  return `width:18px;height:18px;border-radius:999px;background:#fff;display:block;box-shadow:0 1px 2px rgba(0,0,0,0.15);transform:translateX(${on ? '18px' : '0'});transition:transform 150ms ease;`
-}
-
-const platformName = computed(() => platform.value ? platform.value.name : 'Platform')
-const platformCode = computed(() => platform.value ? platform.value.code : '')
-const platformUrl = computed(() => platform.value ? platform.value.url : '')
-
-interface FieldVM {
+// ── collapsible groups ──
+interface FieldView {
   key: string
   label: string
   isToggle: boolean
@@ -57,93 +57,94 @@ interface FieldVM {
   isText: boolean
   placeholder: string
   value: string
-  toggleOn: boolean
+  on: boolean
   locked: boolean
-  useDefault: boolean
+  showBadge: boolean
   badgeLabel: string
-  badgeStyle: string
-  subText: string
-  switchTrackStyle: string
-  switchKnobStyle: string
-  effective: ConfigValue
+  hint: string
 }
 
-const groups = computed(() =>
-  CONFIG_GROUPS.map((def) => {
-    const open = !!openGroups[def.group]
-    let overrideCount = 0
-    const fields: FieldVM[] = def.fields.map((fd) => {
-      const rec = overrides.value[fd.key] || { override: false, value: '' }
-      const override = !!rec.override
-      if (override) overrideCount++
-      const dVal = defaults.value[fd.key]
-      const inheritedShown = (fd.synced && platform.value) ? platform.value.url : dVal
-      const effective: ConfigValue = override ? rec.value : (inheritedShown ?? '')
+const groups = computed(() => CONFIG_GROUPS.map(def => ({
+  group: def.group,
+  title: def.title,
+  icon: 'i-lucide-' + def.icon,
+  open: !!openGroups[def.group],
+  fields: def.fields.map<FieldView>((fd) => {
+    // Base URL is the single source of truth = the identity URL / Path.
+    if (fd.synced) {
       return {
         key: fd.key,
         label: fd.label,
-        isToggle: fd.type === 'toggle',
-        isTextarea: fd.type === 'textarea',
-        isText: fd.type === 'text',
+        isToggle: false,
+        isTextarea: false,
+        isText: true,
         placeholder: fd.placeholder || '',
-        value: fd.type === 'toggle' ? '' : String(effective ?? ''),
-        toggleOn: !!effective,
-        locked: !override,
-        useDefault: !override,
-        badgeLabel: override ? 'Overridden' : 'Inherited',
-        badgeStyle: 'font-size:11px;font-weight:600;padding:2px 9px;border-radius:999px;' + (override
-          ? 'background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;'
-          : 'background:#f1f5f9;color:#64748b;border:1px solid #e2e8f0;'),
-        subText: fd.synced
-          ? (override ? 'Saving replaces this platform’s URL/Path.' : 'Inherited — uses this platform’s URL/Path.')
-          : (override ? 'Platform-specific value.' : 'From Default: ' + (fd.type === 'toggle' ? (dVal ? 'Enabled' : 'Disabled') : (String(dVal || '') || '—'))),
-        switchTrackStyle: switchTrack(!!effective, !override),
-        switchKnobStyle: switchKnob(!!effective),
-        effective
+        value: identity.url || '',
+        on: false,
+        locked: true,
+        showBadge: true,
+        badgeLabel: 'Synced',
+        hint: 'Synced with URL / Path above — edit it there.'
       }
-    })
+    }
+    const val = cfg.value[fd.key]
     return {
-      group: def.group,
-      title: def.title,
-      icon: def.icon,
-      open,
-      hasOverrides: overrideCount > 0,
-      overrideCount: overrideCount + ' overridden',
-      chevronStyle: `display:inline-flex;transition:transform 150ms ease;transform:rotate(${open ? '180deg' : '0deg'});`,
-      fields
+      key: fd.key,
+      label: fd.label,
+      isToggle: fd.type === 'toggle',
+      isTextarea: fd.type === 'textarea',
+      isText: fd.type === 'text',
+      placeholder: fd.placeholder || '',
+      value: fd.type === 'toggle' ? '' : (val == null ? '' : String(val)),
+      on: !!val,
+      locked: false,
+      showBadge: false,
+      badgeLabel: '',
+      hint: ''
     }
   })
-)
+})))
 
 function toggleGroup(group: string) {
   openGroups[group] = !openGroups[group]
 }
-function onToggleUseDefault(f: FieldVM, e: Event) {
-  if ((e.target as HTMLInputElement).checked) setField(f.key, { override: false })
-  else setField(f.key, { override: true, value: f.effective })
-}
-function onFieldChange(f: FieldVM, e: Event) {
-  setField(f.key, { override: true, value: (e.target as HTMLInputElement | HTMLTextAreaElement).value })
-}
-function onToggleValue(f: FieldVM) {
-  if (!f.locked) setField(f.key, { value: !f.effective })
+
+// ── save ──
+function save() {
+  errors.name = identity.name.trim() ? '' : 'Name is required.'
+  errors.url = identity.url.trim() ? '' : 'URL / Path is required.'
+  if (errors.name || errors.url) return
+
+  const p = platform.value
+  if (p) {
+    savePlatforms(loadPlatforms().map(x => x.id === p.id
+      ? { ...x, name: identity.name.trim(), url: identity.url.trim() }
+      : x))
+    savePlatformConfig(p.id, { ...cfg.value, baseUrl: identity.url.trim() })
+  }
+  try {
+    sessionStorage.setItem('vertex_platform_toast', identity.name.trim() + ' updated')
+  } catch {
+    // sessionStorage unavailable
+  }
+  dirty.value = false
+  return router.push('/platforms')
 }
 
-function save() {
-  const pid = platformId.value
-  if (pid) saveConfigOverrides(pid, overrides.value)
-  // Base URL sync: an overridden Base URL becomes this platform's URL/Path
-  const bu = overrides.value.baseUrl
-  if (bu && bu.override && platform.value) {
-    const next = loadPlatforms().map(p => p.id === platform.value!.id ? { ...p, url: String(bu.value) } : p)
-    savePlatforms(next)
-    platform.value = { ...platform.value, url: String(bu.value) }
+// ── leave guard ──
+function tryLeave() {
+  if (dirty.value) {
+    discardOpen.value = true
+    return
   }
-  if (toastTimer !== null) clearTimeout(toastTimer)
-  toast.value = 'Configuration saved for ' + (platform.value ? platform.value.name : 'platform')
-  toastTimer = window.setTimeout(() => {
-    toast.value = null
-  }, 2600)
+  return router.push('/platforms')
+}
+
+const pageTitle = computed(() => 'Edit Platform — ' + (platform.value ? platform.value.name : 'Platform'))
+const crumbLast = computed(() => platform.value ? platform.value.name : 'Platform')
+
+function switchTrackClass(on: boolean) {
+  return on ? 'bg-green-500' : 'bg-slate-200'
 }
 </script>
 
@@ -156,35 +157,80 @@ function save() {
       <NuxtLink to="/platforms" class="text-green-600 no-underline hover:text-green-700">
         Platforms
       </NuxtLink> <span class="text-slate-300">/</span>
-      <span class="text-slate-700">{{ platformName }}</span> <span class="text-slate-300">/</span>
-      <span class="text-slate-900 font-semibold">Configuration</span>
+      <span class="text-slate-900 font-semibold">{{ crumbLast }}</span>
     </div>
 
-    <div class="flex items-center gap-3 mb-2 flex-wrap">
-      <NuxtLink
-        to="/platforms"
-        class="btn-icon-hover w-[38px] h-[38px] border border-slate-200 bg-white rounded-lg inline-flex items-center justify-center text-slate-700 flex-shrink-0 no-underline"
+    <div class="flex items-center gap-3 mb-2">
+      <button
+        title="Back to platforms"
+        class="btn-icon-hover w-[38px] h-[38px] border border-slate-200 bg-white rounded-lg inline-flex items-center justify-center text-slate-700 flex-shrink-0 cursor-pointer"
+        @click="tryLeave"
       >
         <UIcon name="i-lucide-arrow-left" class="w-[18px] h-[18px]" />
-      </NuxtLink>
-      <div class="w-[34px] h-[34px] rounded-lg bg-emerald-50 text-green-600 flex items-center justify-center flex-shrink-0">
-        <UIcon name="i-lucide-globe" class="w-[18px] h-[18px]" />
-      </div>
-      <h1 class="text-2xl font-bold text-slate-900 m-0 whitespace-nowrap">
-        Configure {{ platformName }}
+      </button>
+      <h1 class="text-2xl font-bold text-slate-900 m-0">
+        {{ pageTitle }}
       </h1>
-      <span class="font-mono text-[13px] text-slate-600 bg-slate-100 border border-slate-200 rounded-md px-2 py-[3px]">{{ platformCode }}</span>
-      <span class="text-sm text-slate-500">{{ platformUrl }}</span>
     </div>
-    <p class="text-[15px] text-slate-500 mt-0 mb-5 pl-[50px]">
-      Each field inherits the Default value. Uncheck “Use Default” to set a value just for this platform.
+    <p class="text-[15px] text-slate-500 mt-0 mb-6 pl-[50px]">
+      Identity and configuration for this platform. Each platform holds its own values.
     </p>
 
-    <div class="flex items-center gap-2.5 mb-5 text-[13px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3.5 py-[9px]">
-      <UIcon name="i-lucide-info" class="w-[15px] h-[15px] text-green-600 flex-shrink-0" />
-      <span>Base values live on the <NuxtLink to="/platforms/configuration" class="text-green-600 no-underline hover:text-green-700">Configuration</NuxtLink> page (Default scope). This page stores only this platform’s overrides.</span>
+    <!-- IDENTITY -->
+    <div class="bg-white border border-slate-200 rounded-xl shadow-sm p-6 mb-4">
+      <h2 class="text-base font-bold text-slate-900 mt-0 mb-1">
+        Platform Information
+      </h2>
+      <p class="text-[13px] text-slate-500 mt-0 mb-5">
+        Identity for this sales channel.
+      </p>
+
+      <div class="mb-[18px]">
+        <label class="field-label">Name <span class="text-red-600">*</span></label>
+        <input
+          :value="identity.name"
+          type="text"
+          class="field-input"
+          :class="errors.name ? 'err' : ''"
+          placeholder="e.g. SIM Point"
+          @input="setIdentity('name', ($event.target as HTMLInputElement).value)"
+        >
+        <div v-if="errors.name" class="text-[13px] text-red-600 mt-1.5">
+          {{ errors.name }}
+        </div>
+      </div>
+
+      <div class="mb-[18px]">
+        <label class="field-label">Code <span class="text-red-600">*</span></label>
+        <input
+          :value="identity.code"
+          type="text"
+          disabled
+          class="field-input font-mono"
+          placeholder="e.g. sim_point"
+        >
+        <div class="text-[13px] text-slate-400 mt-1.5">
+          Locked — the code can't change after creation.
+        </div>
+      </div>
+
+      <div>
+        <label class="field-label">URL / Path <span class="text-red-600">*</span></label>
+        <input
+          :value="identity.url"
+          type="text"
+          class="field-input"
+          :class="errors.url ? 'err' : ''"
+          placeholder="e.g. vdm.com/sp-sim"
+          @input="setIdentity('url', ($event.target as HTMLInputElement).value)"
+        >
+        <div v-if="errors.url" class="text-[13px] text-red-600 mt-1.5">
+          {{ errors.url }}
+        </div>
+      </div>
     </div>
 
+    <!-- CONFIG GROUPS -->
     <div class="flex flex-col gap-4">
       <div
         v-for="g in groups"
@@ -197,60 +243,61 @@ function save() {
           @click="toggleGroup(g.group)"
         >
           <div class="flex items-center gap-2.5">
-            <UIcon :name="'i-lucide-' + g.icon" class="w-[17px] h-[17px] text-green-600" />
+            <UIcon :name="g.icon" class="w-[17px] h-[17px] text-green-600" />
             <span class="text-base font-bold text-slate-900">{{ g.title }}</span>
-            <span
-              v-if="g.hasOverrides"
-              class="text-[11px] font-semibold px-[9px] py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200"
-            >{{ g.overrideCount }}</span>
           </div>
-          <span :style="g.chevronStyle"><UIcon name="i-lucide-chevron-down" class="w-[18px] h-[18px] text-slate-400" /></span>
+          <span
+            class="inline-flex transition-transform duration-150"
+            :class="g.open ? 'rotate-180' : ''"
+          >
+            <UIcon name="i-lucide-chevron-down" class="w-[18px] h-[18px] text-slate-400" />
+          </span>
         </button>
+
         <div v-if="g.open" class="px-5 pt-1 pb-5 flex flex-col gap-[18px] border-t border-slate-100">
           <div v-for="f in g.fields" :key="f.key">
-            <div class="flex items-center justify-between gap-3 mb-1.5 flex-wrap">
+            <div class="flex items-center justify-between gap-3 mb-1.5">
               <label class="field-label mb-0">{{ f.label }}</label>
-              <div class="flex items-center gap-2.5">
-                <span :style="f.badgeStyle">{{ f.badgeLabel }}</span>
-                <label class="inline-flex items-center gap-1.5 text-[13px] text-slate-500 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    :checked="f.useDefault"
-                    class="w-[15px] h-[15px] cursor-pointer accent-green-500"
-                    @change="onToggleUseDefault(f, $event)"
-                  >
-                  Use Default
-                </label>
-              </div>
+              <span
+                v-if="f.showBadge"
+                class="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-200"
+              >{{ f.badgeLabel }}</span>
             </div>
+
             <button
               v-if="f.isToggle"
-              :disabled="f.locked"
-              :style="f.switchTrackStyle"
-              @click="onToggleValue(f)"
+              class="w-10 h-[22px] rounded-full border-none cursor-pointer relative p-0.5 inline-flex items-center transition-colors"
+              :class="switchTrackClass(f.on)"
+              @click="setCfg(f.key, !f.on)"
             >
-              <span :style="f.switchKnobStyle" />
+              <span
+                class="w-[18px] h-[18px] rounded-full bg-white block shadow-sm transition-transform duration-150"
+                :class="f.on ? 'translate-x-[18px]' : 'translate-x-0'"
+              />
             </button>
+
             <textarea
               v-else-if="f.isTextarea"
-              class="field-input resize-y"
-              rows="3"
               :value="f.value"
+              rows="3"
+              class="field-input resize-y"
               :disabled="f.locked"
               :placeholder="f.placeholder"
-              @change="onFieldChange(f, $event)"
+              @change="setCfg(f.key, ($event.target as HTMLTextAreaElement).value)"
             />
+
             <input
               v-else
-              class="field-input"
-              type="text"
               :value="f.value"
+              type="text"
+              class="field-input"
               :disabled="f.locked"
               :placeholder="f.placeholder"
-              @change="onFieldChange(f, $event)"
+              @change="setCfg(f.key, ($event.target as HTMLInputElement).value)"
             >
-            <div class="text-[12.5px] text-slate-400 mt-1.5 flex items-center gap-[5px]">
-              <UIcon name="i-lucide-corner-down-right" class="w-3 h-3 flex-shrink-0" />{{ f.subText }}
+
+            <div v-if="f.hint" class="text-[12.5px] text-slate-400 mt-1.5 flex items-center gap-[5px]">
+              <UIcon name="i-lucide-info" class="w-3 h-3 flex-shrink-0" />{{ f.hint }}
             </div>
           </div>
         </div>
@@ -258,27 +305,52 @@ function save() {
     </div>
 
     <div class="flex justify-end gap-2.5 mt-5">
-      <NuxtLink
-        to="/platforms"
-        class="border border-slate-200 bg-white text-slate-700 text-[15px] font-semibold px-5 py-2.5 rounded-lg cursor-pointer no-underline"
+      <button
+        class="border border-slate-200 bg-white text-slate-700 text-[15px] font-semibold px-5 py-2.5 rounded-lg cursor-pointer hover:bg-slate-50 transition-colors"
+        @click="tryLeave"
       >
         Cancel
-      </NuxtLink>
+      </button>
       <button
         class="border-none bg-green-500 text-white text-[15px] font-bold px-[22px] py-2.5 rounded-lg cursor-pointer shadow-sm hover:bg-green-600 transition-colors"
         @click="save"
       >
-        Save
+        Save Platform
       </button>
     </div>
 
-    <!-- toast -->
+    <!-- discard confirm -->
     <div
-      v-if="toast"
-      class="toast-in fixed bottom-6 right-6 z-[300] bg-white border border-slate-200 border-l-4 border-l-green-500 rounded-[10px] shadow-[0_10px_30px_rgba(0,0,0,0.14)] px-[18px] py-3.5 flex items-center gap-3"
+      v-if="discardOpen"
+      class="fixed inset-0 bg-slate-900/45 backdrop-blur-[2px] flex items-center justify-center z-[200] p-5"
     >
-      <UIcon name="i-lucide-circle-check" class="w-5 h-5 text-green-600" />
-      <span class="text-[15px] font-semibold text-slate-900">{{ toast }}</span>
+      <div class="bg-white rounded-[14px] w-[420px] max-w-[92vw] shadow-[0_20px_60px_rgba(0,0,0,0.25)] p-6">
+        <div class="flex items-center gap-3 mb-2">
+          <div class="w-11 h-11 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center flex-shrink-0">
+            <UIcon name="i-lucide-triangle-alert" class="w-[22px] h-[22px]" />
+          </div>
+          <h3 class="text-[17px] font-bold text-slate-900 m-0">
+            Discard changes?
+          </h3>
+        </div>
+        <p class="text-[15px] text-slate-500 mt-0 mb-5">
+          Any information you entered will be lost.
+        </p>
+        <div class="flex justify-end gap-2.5">
+          <button
+            class="border border-slate-200 bg-white text-slate-700 text-[15px] font-semibold px-[18px] py-[9px] rounded-lg cursor-pointer"
+            @click="discardOpen = false"
+          >
+            Keep editing
+          </button>
+          <button
+            class="border-none bg-red-600 text-white text-[15px] font-bold px-[18px] py-[9px] rounded-lg cursor-pointer"
+            @click="router.push('/platforms')"
+          >
+            Discard
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -307,6 +379,9 @@ function save() {
 .field-input::placeholder {
   color: #94a3b8;
 }
+.field-input.err {
+  border-color: #dc2626;
+}
 .field-label {
   font-size: 14px;
   font-weight: 600;
@@ -316,12 +391,5 @@ function save() {
 }
 .btn-icon-hover:hover {
   background: #f1f5f9;
-}
-.toast-in {
-  animation: toastIn 200ms ease;
-}
-@keyframes toastIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
 }
 </style>

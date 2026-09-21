@@ -56,11 +56,13 @@ export interface AttributeDef {
 export interface Fee {
   id: string
   name: string
+  // lucide icon name chosen in the Pricing Setting modal (legacy rows have none)
+  icon?: string
   description: string
   system: boolean
 }
 
-// Configuration store (config-store.js): one Default scope + per-platform overrides.
+// Configuration store: each platform owns its full set of values.
 export interface ConfigField {
   key: string
   label: string
@@ -75,12 +77,8 @@ export interface ConfigGroup {
   fields: ConfigField[]
 }
 export type ConfigValue = string | boolean
-export type ConfigDefaults = Record<string, ConfigValue>
-export interface ConfigOverride {
-  override: boolean
-  value: ConfigValue
-}
-export type ConfigOverrides = Record<string, ConfigOverride>
+// Full set of configuration values owned by one platform.
+export type ConfigValues = Record<string, ConfigValue>
 
 export type ProductType = 'single' | 'variant' | 'bundle'
 export type ProductStatus = 'Active' | 'Inactive'

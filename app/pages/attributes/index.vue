@@ -69,9 +69,6 @@ const deleteCancelLabel = computed(() => deleteBlocked.value ? 'Close' : 'Cancel
       <NuxtLink to="/dashboard" class="text-green-600 no-underline hover:text-green-700">
         Inventory
       </NuxtLink> <span class="text-slate-300">/</span>
-      <NuxtLink to="/dashboard" class="text-green-600 no-underline hover:text-green-700">
-        Product
-      </NuxtLink> <span class="text-slate-300">/</span>
       <span class="text-green-600">Configuration</span> <span class="text-slate-300">/</span>
       <span class="text-slate-900 font-semibold">Attributes</span>
     </div>
@@ -220,31 +217,6 @@ const deleteCancelLabel = computed(() => deleteBlocked.value ? 'Close' : 'Cancel
 </template>
 
 <style scoped>
-.field-input {
-  width: 100%;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  padding: 10px 12px;
-  font-size: 15px;
-  color: #0f172a;
-  background: #fff;
-  outline: none;
-  transition: border-color 150ms ease, box-shadow 150ms ease;
-}
-.field-input:focus {
-  border-color: #00c16a;
-  box-shadow: 0 0 0 3px rgba(0, 193, 106, 0.15);
-}
-.field-input::placeholder {
-  color: #94a3b8;
-}
-.field-label {
-  font-size: 14px;
-  font-weight: 600;
-  color: #334155;
-  margin-bottom: 6px;
-  display: block;
-}
 .row-hover:hover {
   background: #f8fafc;
 }

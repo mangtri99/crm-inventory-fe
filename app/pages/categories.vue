@@ -31,6 +31,7 @@ const draftEnabled = ref(true)
 const nameError = ref(false)
 const scope = ref('default')
 const scopeOpen = ref(false)
+const scopeInfoDismissed = ref(false)
 const members = ref<string[]>([])
 const positions = ref<Record<string, Record<string, number>>>({ default: {} })
 const scopeOverride = ref<Record<string, boolean>>({})
@@ -327,6 +328,8 @@ function onAddRoot() {
 function onAddSub() {
   addModal.value = { parentId: selectedId.value || null, name: '', error: false, enabled: true, inMenu: true, forceSub: true }
 }
+// tree is capped at 3 levels, so a depth-2 category takes no children
+const addSubDisabled = computed(() => !!(selCat.value && categoryDepthOf(cats.value, selCat.value.id) >= 2))
 
 // ── selected category ──
 const selCat = computed(() => selectedId.value ? categoryById(cats.value, selectedId.value) : null)
@@ -432,9 +435,7 @@ function onReset() {
       <NuxtLink to="/dashboard" class="text-green-600 no-underline hover:text-green-700">
         Inventory
       </NuxtLink> <span class="text-slate-300">/</span>
-      <NuxtLink to="/dashboard" class="text-green-600 no-underline hover:text-green-700">
-        Product
-      </NuxtLink> <span class="text-slate-300">/</span>
+      <span class="text-green-600">Configuration</span> <span class="text-slate-300">/</span>
       <span class="text-slate-900 font-semibold">Categories</span>
     </div>
 
@@ -449,6 +450,24 @@ function onReset() {
       </div>
     </div>
 
+    <!-- Default-scope explainer (dismissable) -->
+    <div
+      v-if="!isPlatformScope && !scopeInfoDismissed"
+      class="flex items-start gap-2.5 bg-amber-50 border border-amber-200 rounded-[10px] px-3.5 py-3 mb-5"
+    >
+      <UIcon name="i-lucide-triangle-alert" class="w-[17px] h-[17px] text-amber-600 flex-shrink-0 mt-px" />
+      <div class="flex-1 min-w-0 text-[13px] text-amber-800 leading-[1.5]">
+        You're editing <strong>Default</strong>. Changes to structure, names, and membership apply to all platforms. To set position per platform, switch "Select platform" first.
+      </div>
+      <button
+        title="Dismiss"
+        class="border-none bg-transparent text-amber-600 cursor-pointer p-0.5 inline-flex items-center flex-shrink-0"
+        @click="scopeInfoDismissed = true"
+      >
+        <UIcon name="i-lucide-x" class="w-4 h-4" />
+      </button>
+    </div>
+
     <!-- scope card -->
     <div
       v-if="selCat"
@@ -456,7 +475,7 @@ function onReset() {
     >
       <div class="flex items-center gap-2 mb-3.5">
         <UIcon name="i-lucide-layers" class="w-4 h-4 text-green-600" />
-        <span class="text-[15px] font-bold text-slate-900">Order for</span>
+        <span class="text-[15px] font-bold text-slate-900">Select platform</span>
       </div>
       <div class="relative mb-3">
         <button type="button" :style="ddTrigger(scopeOpen)" @click="scopeOpen = !scopeOpen">
@@ -538,7 +557,8 @@ function onReset() {
               <UIcon name="i-lucide-panel-left-close" class="w-4 h-4" />
             </button>
           </div>
-          <div class="flex flex-col gap-2 mb-3">
+          <!-- structural edits only apply to the Default scope -->
+          <div v-if="!isPlatformScope" class="flex flex-col gap-2 mb-3">
             <button
               class="w-full border-none bg-green-500 text-white text-sm font-bold px-3.5 py-2.5 rounded-lg cursor-pointer inline-flex items-center justify-center gap-[7px] hover:bg-green-600 transition-colors"
               @click="onAddRoot"
@@ -548,6 +568,7 @@ function onReset() {
             <button
               class="w-full border border-slate-200 bg-white text-sm font-semibold px-3.5 py-2.5 rounded-lg inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
               :class="selectedId ? 'text-slate-700 cursor-pointer hover:bg-slate-50' : 'text-slate-300 cursor-not-allowed'"
+              :disabled="addSubDisabled"
               @click="onAddSub"
             >
               <UIcon name="i-lucide-corner-down-right" class="w-[15px] h-[15px]" /> Add Subcategory

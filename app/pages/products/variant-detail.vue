@@ -17,6 +17,8 @@ interface VariantRow {
   active?: boolean
   image?: string | null
   description?: string
+  notForSale?: boolean
+  platformIds?: string[]
   pricing?: VariantPricing
   priceOverrides?: Record<string, PriceOverride>
 }
@@ -108,13 +110,22 @@ function hydrate(v: VariantRow): VariantRow {
     d.pricing = {
       isSubscription: false,
       monthly: '',
-      components: [{ feeId: FEE_BASE_ID, published: true, amount: (v.price === '' || v.price == null) ? '' : v.price }]
+      components: [
+        { feeId: FEE_BASE_ID, published: true, amount: (v.price === '' || v.price == null) ? '' : v.price },
+        { feeId: 'fee_tax', published: true, amount: '' },
+        { feeId: 'fee_shipping', published: true, amount: '' }
+      ]
     }
   } else {
+    // v3 guarantees the three default components exist on an already-priced row
+    const comps = (d.pricing.components || []).map(c => ({ ...c }))
+    if (!comps.some(c => c.feeId === FEE_BASE_ID)) comps.unshift({ feeId: FEE_BASE_ID, published: true, amount: '' })
+    if (!comps.some(c => c.feeId === 'fee_tax')) comps.push({ feeId: 'fee_tax', published: true, amount: '' })
+    if (!comps.some(c => c.feeId === 'fee_shipping')) comps.push({ feeId: 'fee_shipping', published: true, amount: '' })
     d.pricing = {
       isSubscription: !!d.pricing.isSubscription,
       monthly: d.pricing.monthly != null ? d.pricing.monthly : '',
-      components: (d.pricing.components || []).map(c => ({ ...c }))
+      components: comps
     }
   }
   d.priceOverrides = d.priceOverrides ? JSON.parse(JSON.stringify(d.priceOverrides)) : {}
@@ -251,6 +262,67 @@ function togglePublish(feeId: string) {
 function onToggleStatus() {
   if (isEditMode.value) update('active', !draft.value?.active)
 }
+const giftOn = computed(() => !!src.value?.notForSale)
+const giftHelper = computed(() => giftOn.value ? 'Marked as gift' : 'Regular product')
+function onToggleGift() {
+  update('notForSale', !giftOn.value)
+}
+
+// ── per-variant platforms (a subset of the parent's) ──
+const parentPlatformIds = computed(() => product.value.platformIds || [])
+const variantPlatformIds = computed(() => {
+  const base = Array.isArray(src.value?.platformIds) ? src.value!.platformIds! : parentPlatformIds.value
+  return base.filter(id => parentPlatformIds.value.indexOf(id) !== -1)
+})
+const platformDropdownOpen = ref(false)
+const editPlatformChips = computed(() =>
+  variantPlatformIds.value
+    .map(id => platformById(platforms.value, id))
+    .filter((p): p is Platform => !!p)
+)
+const platformAddItems = computed(() =>
+  parentPlatformIds.value
+    .filter(id => variantPlatformIds.value.indexOf(id) === -1)
+    .map(id => platformById(platforms.value, id))
+    .filter((p): p is Platform => !!p)
+)
+const platformAllAssigned = computed(() => platformAddItems.value.length === 0 && variantPlatformIds.value.length > 0)
+const platformAddLabel = computed(() => editPlatformChips.value.length ? 'Add another platform' : 'Add platform')
+const viewPlatformChips = computed(() =>
+  (Array.isArray(src.value?.platformIds) ? src.value!.platformIds! : parentPlatformIds.value)
+    .map(id => platformById(platforms.value, id)?.name)
+    .filter((n): n is string => !!n)
+)
+function addVariantPlatform(id: string) {
+  const base = variantPlatformIds.value.slice()
+  if (base.indexOf(id) === -1) base.push(id)
+  update('platformIds', base)
+  platformDropdownOpen.value = false
+}
+function removeVariantPlatform(id: string) {
+  update('platformIds', variantPlatformIds.value.filter(x => x !== id))
+}
+
+// ── pricing components: add / remove (Base Price is locked) ──
+function addComponent() {
+  const d = draft.value
+  if (!d || !d.pricing) return
+  const used = d.pricing.components.map(c => c.feeId)
+  const next = fees.value.find(f => used.indexOf(f.id) === -1)
+  const feeId = next ? next.id : 'fee_custom_' + Date.now()
+  draft.value = {
+    ...d,
+    pricing: { ...d.pricing, components: [...d.pricing.components, { feeId, published: true, amount: '' }] }
+  }
+}
+function removeComponent(feeId: string) {
+  const d = draft.value
+  if (!d || !d.pricing || feeId === FEE_BASE_ID) return
+  draft.value = {
+    ...d,
+    pricing: { ...d.pricing, components: d.pricing.components.filter(c => c.feeId !== feeId) }
+  }
+}
 function onStockChange(e: Event) {
   update('stock', (e.target as HTMLInputElement).value)
 }
@@ -290,7 +362,7 @@ function effAmount(c: VariantComponent) {
   const ov = amts[c.feeId]
   return (!isDefaultScope.value && ov !== undefined && ov !== '') ? ov : c.amount
 }
-const subscriptionLabel = computed(() => pricing.value.isSubscription ? 'Subscription — recurring monthly fee' : 'One-time purchase')
+const subscriptionLabel = computed(() => pricing.value.isSubscription ? 'Recurring — monthly fee' : 'One-time purchase')
 const monthlyLabel = computed(() => (effMonthly.value === '' || effMonthly.value == null) ? '—' : '¥' + Number(effMonthly.value).toLocaleString('en-US'))
 const monthlyValue = computed(() => (effMonthly.value === '' || effMonthly.value == null) ? '' : effMonthly.value)
 const pricingHelper = computed(() => isDefaultScope.value ? 'Base pricing for this variant.' : 'Per-platform pricing (amounts may override the base).')
@@ -308,7 +380,8 @@ const pricingComponents = computed(() =>
       publishedStyle: pub ? BADGE_PUBLISHED : BADGE_UNPUBLISHED,
       publishTrackStyle: smallTrack(pub),
       publishKnobStyle: smallKnob(pub),
-      rowStyle: `display:grid;grid-template-columns:1fr 150px 130px;gap:8px;align-items:center;padding:11px 16px;border-bottom:1px solid #f1f5f9;${pub ? '' : 'background:#fafafa;color:#94a3b8;'}`
+      canRemove: isEditMode.value && c.feeId !== FEE_BASE_ID,
+      rowStyle: `display:grid;grid-template-columns:1fr 150px 130px 40px;gap:8px;align-items:center;padding:11px 16px;border-bottom:1px solid #f1f5f9;${pub ? '' : 'background:#fafafa;color:#94a3b8;'}`
     }
   })
 )
@@ -594,14 +667,65 @@ function onSaveEdit() {
           </div>
           <div class="mb-4">
             <span class="static-label">Platforms</span>
-            <div class="flex flex-wrap gap-1.5 mt-[5px]">
+            <div v-if="isViewMode" class="flex flex-wrap gap-1.5 mt-[5px]">
               <span
-                v-for="pl in assignedPlatforms"
-                :key="pl.id"
+                v-for="pl in viewPlatformChips"
+                :key="pl"
                 class="text-xs font-semibold text-slate-600 bg-slate-100 border border-slate-200 rounded-full px-2.5 py-[3px]"
-              >{{ pl.name }}</span>
-              <span v-if="!assignedPlatforms.length" class="text-sm text-slate-300">—</span>
+              >{{ pl }}</span>
+              <span v-if="!variantPlatformIds.length" class="text-sm text-slate-300">—</span>
             </div>
+            <template v-else>
+              <label class="field-label">Platforms</label>
+              <div v-if="editPlatformChips.length" class="flex flex-wrap gap-1.5 mb-2">
+                <span
+                  v-for="chip in editPlatformChips"
+                  :key="chip.id"
+                  class="inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full py-1 pr-2 pl-3 text-[13px] font-semibold"
+                >
+                  {{ chip.name }}
+                  <button
+                    title="Remove"
+                    class="border-none bg-transparent cursor-pointer text-emerald-700 flex items-center p-0.5 rounded-full"
+                    @click="removeVariantPlatform(chip.id)"
+                  >
+                    <UIcon name="i-lucide-x" class="w-3 h-3" />
+                  </button>
+                </span>
+              </div>
+              <div class="relative">
+                <button
+                  type="button"
+                  class="w-full flex items-center justify-between gap-2 border border-slate-200 rounded-lg px-3 py-[9px] h-10 text-sm bg-white cursor-pointer"
+                  @click="platformDropdownOpen = !platformDropdownOpen"
+                >
+                  <span class="text-slate-500">{{ platformAddLabel }}</span>
+                  <span class="inline-flex items-center text-slate-500 flex-shrink-0">
+                    <UIcon name="i-lucide-chevron-down" class="w-4 h-4" />
+                  </span>
+                </button>
+                <template v-if="platformDropdownOpen">
+                  <div class="fixed inset-0 z-40" @click="platformDropdownOpen = false" />
+                  <div class="absolute top-[calc(100%+4px)] left-0 right-0 z-50 bg-white border border-slate-200 rounded-lg shadow-[0_10px_30px_rgba(0,0,0,0.14)] p-1 max-h-[220px] overflow-y-auto">
+                    <button
+                      v-for="opt in platformAddItems"
+                      :key="opt.id"
+                      type="button"
+                      class="w-full text-left border-none rounded-md bg-transparent px-2.5 py-2 text-sm text-slate-700 cursor-pointer hover:bg-slate-50"
+                      @click="addVariantPlatform(opt.id)"
+                    >
+                      <span>{{ opt.name }}</span>
+                    </button>
+                    <div v-if="platformAllAssigned" class="p-2.5 text-[13px] text-slate-400 text-center">
+                      All parent platforms added
+                    </div>
+                  </div>
+                </template>
+              </div>
+              <div class="text-xs text-slate-400 mt-1.5 flex items-center gap-[5px]">
+                <UIcon name="i-lucide-info" class="w-3 h-3 flex-shrink-0" />Limited to the parent product's platforms.
+              </div>
+            </template>
           </div>
 
           <div class="mb-4">
@@ -634,6 +758,24 @@ function onSaveEdit() {
               @click="onToggleStatus"
             >
               <span :style="knobStyle(active)" />
+            </button>
+          </div>
+
+          <div class="flex items-center justify-between gap-3 py-3.5 border-t border-slate-100">
+            <div>
+              <div class="text-sm font-semibold text-slate-900">
+                Mark as gift
+              </div>
+              <div class="text-[13px] text-slate-500 mt-0.5">
+                {{ giftHelper }}
+              </div>
+            </div>
+            <span
+              v-if="isViewMode && giftOn"
+              class="text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2.5 py-0.5"
+            >Gift</span>
+            <button v-else-if="isEditMode" :style="smallTrack(giftOn)" @click="onToggleGift">
+              <span :style="smallKnob(giftOn)" />
             </button>
           </div>
 
@@ -715,7 +857,7 @@ function onSaveEdit() {
         </div>
 
         <div class="border border-slate-200 rounded-[10px] overflow-hidden">
-          <div class="grid grid-cols-[1fr_150px_130px] gap-2 items-center px-4 py-[11px] bg-slate-50 border-b border-slate-200">
+          <div class="grid grid-cols-[1fr_150px_130px_40px] gap-2 items-center px-4 py-[11px] bg-slate-50 border-b border-slate-200">
             <span class="text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Component</span>
             <span class="text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Amount</span>
             <span class="text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Published</span>
@@ -739,6 +881,24 @@ function onSaveEdit() {
                 <span :style="c.publishKnobStyle" />
               </button>
             </span>
+            <span class="text-center">
+              <button
+                v-if="c.canRemove"
+                title="Remove component"
+                class="border-none bg-transparent text-slate-400 w-[30px] h-[30px] rounded-lg cursor-pointer inline-flex items-center justify-center hover:text-red-500"
+                @click="removeComponent(c.feeId)"
+              >
+                <UIcon name="i-lucide-trash-2" class="w-[15px] h-[15px]" />
+              </button>
+            </span>
+          </div>
+          <div v-if="isEditMode" class="px-4 py-2.5 border-t border-slate-100">
+            <button
+              class="inline-flex items-center gap-1.5 border border-dashed border-green-500 bg-emerald-50 text-green-600 text-[13px] font-semibold px-3.5 py-2 rounded-lg cursor-pointer"
+              @click="addComponent"
+            >
+              <UIcon name="i-lucide-plus" class="w-3.5 h-3.5" /> Add component
+            </button>
           </div>
         </div>
       </div>

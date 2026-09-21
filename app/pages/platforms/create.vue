@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Platform } from '~/types'
+import type { ConfigValue, ConfigValues, Platform } from '~/types'
 
 useHead({ title: 'Create Platform — Vertex' })
 
@@ -15,6 +15,10 @@ const codeTouched = ref(false)
 const dirty = ref(false)
 const errors = ref<FormErrors>({})
 const discardOpen = ref(false)
+// Config starts blank on this screen (the design does not preload an existing
+// platform's saved values here) and is written on save.
+const cfg = ref<ConfigValues>({ ...GENERIC_CONFIG_SEED })
+const openGroups = reactive<Record<string, boolean>>({ store: true, web: true, contact: true, contactus: true })
 
 // SSR-safe: resolve the edit target from localStorage only after mount, so
 // server + first client paint both render the empty "Create" form.
@@ -55,6 +59,72 @@ function onUrlInput(e: Event) {
   set('url', (e.target as HTMLInputElement).value)
 }
 
+function setCfg(key: string, value: ConfigValue) {
+  cfg.value = { ...cfg.value, [key]: value }
+  dirty.value = true
+}
+function toggleGroup(group: string) {
+  openGroups[group] = !openGroups[group]
+}
+
+interface FieldView {
+  key: string
+  label: string
+  isToggle: boolean
+  isTextarea: boolean
+  isText: boolean
+  placeholder: string
+  value: string
+  on: boolean
+  locked: boolean
+  showBadge: boolean
+  badgeLabel: string
+  hint: string
+}
+
+const groups = computed(() => CONFIG_GROUPS.map(def => ({
+  group: def.group,
+  title: def.title,
+  icon: 'i-lucide-' + def.icon,
+  open: !!openGroups[def.group],
+  fields: def.fields.map<FieldView>((fd) => {
+    // Base URL mirrors the identity URL / Path field above.
+    if (fd.synced) {
+      return {
+        key: fd.key,
+        label: fd.label,
+        isToggle: false,
+        isTextarea: false,
+        isText: true,
+        placeholder: fd.placeholder || '',
+        value: form.url || '',
+        on: false,
+        locked: true,
+        showBadge: true,
+        badgeLabel: 'Synced',
+        hint: 'Synced with URL / Path above — edit it there.'
+      }
+    }
+    const val = cfg.value[fd.key]
+    return {
+      key: fd.key,
+      label: fd.label,
+      isToggle: fd.type === 'toggle',
+      isTextarea: fd.type === 'textarea',
+      isText: fd.type === 'text',
+      placeholder: fd.placeholder || '',
+      value: fd.type === 'toggle' ? '' : (val == null ? '' : String(val)),
+      on: !!val,
+      locked: false,
+      showBadge: false,
+      badgeLabel: '',
+      hint: ''
+    }
+  })
+})))
+
+const saveDisabled = computed(() => !(form.name.trim() && form.code.trim() && form.url.trim()))
+
 function validate(): FormErrors {
   const f = form
   const errs: FormErrors = {}
@@ -78,12 +148,15 @@ function save() {
   const f = form
   const list = loadPlatforms()
   let next: Platform[]
+  let savedId = editId.value
   if (editId.value) {
     next = list.map(p => p.id === editId.value ? { ...p, name: f.name.trim(), url: f.url.trim() } : p)
   } else {
-    next = [...list, { id: 'plat_' + Date.now(), name: f.name.trim(), code: f.code.trim(), url: f.url.trim() }]
+    savedId = 'plat_' + Date.now()
+    next = [...list, { id: savedId, name: f.name.trim(), code: f.code.trim(), url: f.url.trim() }]
   }
   savePlatforms(next)
+  if (savedId) savePlatformConfig(savedId, { ...cfg.value, baseUrl: f.url.trim() })
   try {
     sessionStorage.setItem('vertex_platform_toast', editId.value ? 'Platform updated successfully' : 'Platform created successfully')
   } catch {
@@ -185,6 +258,80 @@ function onConfirmDiscard() {
         </div>
       </div>
 
+      <!-- CONFIG GROUPS -->
+      <div class="flex flex-col gap-4 mt-4">
+        <div
+          v-for="g in groups"
+          :key="g.group"
+          class="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden"
+        >
+          <button
+            type="button"
+            class="w-full flex items-center justify-between gap-3 px-5 py-4 bg-white border-none cursor-pointer text-left"
+            @click="toggleGroup(g.group)"
+          >
+            <div class="flex items-center gap-2.5">
+              <UIcon :name="g.icon" class="w-[17px] h-[17px] text-green-600" />
+              <span class="text-base font-bold text-slate-900">{{ g.title }}</span>
+            </div>
+            <span
+              class="inline-flex transition-transform duration-150"
+              :class="g.open ? 'rotate-180' : ''"
+            >
+              <UIcon name="i-lucide-chevron-down" class="w-[18px] h-[18px] text-slate-400" />
+            </span>
+          </button>
+
+          <div v-if="g.open" class="px-5 pt-1 pb-5 flex flex-col gap-[18px] border-t border-slate-100">
+            <div v-for="f in g.fields" :key="f.key">
+              <div class="flex items-center justify-between gap-3 mb-1.5">
+                <label class="field-label mb-0">{{ f.label }}</label>
+                <span
+                  v-if="f.showBadge"
+                  class="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-200"
+                >{{ f.badgeLabel }}</span>
+              </div>
+
+              <button
+                v-if="f.isToggle"
+                class="w-10 h-[22px] rounded-full border-none cursor-pointer relative p-0.5 inline-flex items-center transition-colors"
+                :class="f.on ? 'bg-green-500' : 'bg-slate-200'"
+                @click="setCfg(f.key, !f.on)"
+              >
+                <span
+                  class="w-[18px] h-[18px] rounded-full bg-white block shadow-sm transition-transform duration-150"
+                  :class="f.on ? 'translate-x-[18px]' : 'translate-x-0'"
+                />
+              </button>
+
+              <textarea
+                v-else-if="f.isTextarea"
+                :value="f.value"
+                rows="3"
+                class="field-input resize-y"
+                :disabled="f.locked"
+                :placeholder="f.placeholder"
+                @change="setCfg(f.key, ($event.target as HTMLTextAreaElement).value)"
+              />
+
+              <input
+                v-else
+                :value="f.value"
+                type="text"
+                class="field-input"
+                :disabled="f.locked"
+                :placeholder="f.placeholder"
+                @change="setCfg(f.key, ($event.target as HTMLInputElement).value)"
+              >
+
+              <div v-if="f.hint" class="text-[12.5px] text-slate-400 mt-1.5 flex items-center gap-[5px]">
+                <UIcon name="i-lucide-info" class="w-3 h-3 flex-shrink-0" />{{ f.hint }}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="flex justify-end gap-2.5 mt-5">
         <button
           class="border border-slate-200 bg-white text-slate-700 text-[15px] font-semibold px-5 py-2.5 rounded-lg cursor-pointer"
@@ -193,7 +340,11 @@ function onConfirmDiscard() {
           Cancel
         </button>
         <button
-          class="border-none bg-green-500 text-white text-[15px] font-bold px-[22px] py-2.5 rounded-lg cursor-pointer shadow-sm hover:bg-green-600 transition-colors"
+          class="border-none text-[15px] font-bold px-[22px] py-2.5 rounded-lg"
+          :class="saveDisabled
+            ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
+            : 'bg-green-500 text-white cursor-pointer shadow-sm hover:bg-green-600 transition-colors'"
+          :disabled="saveDisabled"
           @click="save"
         >
           Save Platform

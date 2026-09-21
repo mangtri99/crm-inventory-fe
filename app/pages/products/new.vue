@@ -83,8 +83,6 @@ const attributeDefs = ref<AttributeDef[]>([])
 const fees = ref<Fee[]>([...FEE_SEED])
 
 const prodImageInput = ref<HTMLInputElement | null>(null)
-const variantImageInput = ref<HTMLInputElement | null>(null)
-let variantImageTarget: string | null = null
 let toastTimer: number | null = null
 
 const hasVariants = computed(() => productType.value === 'variant')
@@ -270,6 +268,17 @@ function removeAttributeValue(id: string, value: string) {
     a.id === id ? { ...a, values: a.values.filter(v => v !== value) } : a
   )
 }
+// Checkbox-type attributes pick many values, radio-type exactly one.
+function toggleAttributeValue(id: string, value: string) {
+  attributes.value = attributes.value.map(a =>
+    a.id === id
+      ? { ...a, values: a.values.indexOf(value) !== -1 ? a.values.filter(v => v !== value) : [...a.values, value] }
+      : a
+  )
+}
+function pickAttributeValue(id: string, value: string) {
+  attributes.value = attributes.value.map(a => a.id === id ? { ...a, values: [value] } : a)
+}
 
 const attributeRows = computed(() =>
   attributes.value.map((a) => {
@@ -279,17 +288,24 @@ const attributeRows = computed(() =>
       const usedElsewhere = attributes.value.some(x => x.id !== a.id && x.name === opt)
       return { value: opt, label: usedElsewhere ? opt + ' (already used)' : opt, disabled: usedElsewhere }
     })
+    // The Attributes page's input type picks which value editor renders here.
+    const attrType = a.name ? attributeTypeFor(attributeDefs.value, a.name) : 'Select'
+    const presets = a.name ? attributeValuesFor(attributeDefs.value, a.name) : []
     return {
       id: a.id,
       name: a.name,
       typeOptions,
+      noAttr: !a.name,
+      isCheckbox: !!a.name && attrType === 'Checkbox',
+      isRadio: !!a.name && attrType === 'Radio',
+      isSelectValue: !!a.name && attrType === 'Select',
+      radioName: 'attr_radio_' + a.id,
+      noChoices: !!a.name && presets.length === 0,
+      choices: presets.map(v => ({ label: v, checked: a.values.indexOf(v) !== -1 })),
       valueChips: a.values,
-      valueOptions: options,
+      availableValues: options,
       canAddValue: !!a.name && options.length > 0,
-      noValueOptions: !a.name || options.length === 0,
-      valuesEmptyHint: a.name
-        ? (attributeValuesFor(attributeDefs.value, a.name).length ? 'All values added' : 'No preset values — add on the Attributes page')
-        : 'Select an attribute first'
+      allSelected: !!a.name && presets.length > 0 && options.length === 0
     }
   })
 )
@@ -338,21 +354,6 @@ function removeVariant(key: string) {
 }
 function toggleVariantActive(key: string) {
   variants.value = variants.value.map(v => v.key === key ? { ...v, active: !v.active } : v)
-}
-function pickVariantImage(key: string) {
-  variantImageTarget = key
-  if (variantImageInput.value) {
-    variantImageInput.value.value = ''
-    variantImageInput.value.click()
-  }
-}
-function onVariantImageChange(e: Event) {
-  const file = (e.target as HTMLInputElement).files?.[0]
-  const key = variantImageTarget
-  if (!file || !key || !file.type.startsWith('image/')) return
-  const reader = new FileReader()
-  reader.onload = ev => updateVariant(key, 'image', String(ev.target?.result || ''))
-  reader.readAsDataURL(file)
 }
 const variantCountLabel = computed(() =>
   variants.value.length === 1 ? '1 variant' : variants.value.length + ' variants'
@@ -505,8 +506,6 @@ const subscriptionHelper = computed(() =>
 // Variant products price per row, so the product-level price block is hidden.
 const showProductPrice = computed(() => productType.value !== 'variant')
 const pricePerVariant = computed(() => productType.value === 'variant')
-// "Not for sale" dims the whole pricing body (the banner above it stays lit)
-const pricingBodyStyle = computed(() => notForSale.value ? 'opacity:0.55;pointer-events:none;' : '')
 
 // ── status ──
 function togglePublished() {
@@ -517,7 +516,7 @@ function toggleNotForSale() {
   notForSale.value = !notForSale.value
 }
 const notForSaleHelper = computed(() =>
-  notForSale.value ? 'Not for sale — gift / not purchasable' : 'Available for purchase'
+  notForSale.value ? 'Marked as gift' : 'Regular product'
 )
 
 // ── save / cancel ──
@@ -935,7 +934,7 @@ function onConfirmDiscard() {
           <div class="flex items-center justify-between pt-4 mt-4 border-t border-slate-100">
             <div>
               <div class="text-sm font-semibold text-slate-900">
-                Not for sale
+                Mark as gift
               </div>
               <div class="text-[13px] text-slate-500 mt-0.5">
                 {{ notForSaleHelper }}
@@ -997,7 +996,50 @@ function onConfirmDiscard() {
                   </div>
                   <div class="basis-[170px] grow shrink min-w-0">
                     <label class="field-label text-xs">Values</label>
-                    <div class="flex flex-wrap gap-1.5 items-center">
+
+                    <div v-if="attr.noAttr" class="text-xs text-slate-400 px-1 py-2">
+                      Select an attribute first
+                    </div>
+
+                    <!-- Checkbox type: many values -->
+                    <div v-else-if="attr.isCheckbox" class="flex flex-wrap gap-x-4 gap-y-2 py-1">
+                      <label
+                        v-for="ch in attr.choices"
+                        :key="ch.label"
+                        class="inline-flex items-center gap-[7px] text-[13px] text-slate-700 cursor-pointer select-none"
+                      >
+                        <input
+                          type="checkbox"
+                          :checked="ch.checked"
+                          class="w-[15px] h-[15px] accent-green-500 cursor-pointer"
+                          @change="toggleAttributeValue(attr.id, ch.label)"
+                        >
+                        {{ ch.label }}
+                      </label>
+                      <span v-if="attr.noChoices" class="text-xs text-slate-400">No preset values — add on the Attributes page</span>
+                    </div>
+
+                    <!-- Radio type: exactly one value -->
+                    <div v-else-if="attr.isRadio" class="flex flex-wrap gap-x-4 gap-y-2 py-1">
+                      <label
+                        v-for="ch in attr.choices"
+                        :key="ch.label"
+                        class="inline-flex items-center gap-[7px] text-[13px] text-slate-700 cursor-pointer select-none"
+                      >
+                        <input
+                          type="radio"
+                          :name="attr.radioName"
+                          :checked="ch.checked"
+                          class="w-[15px] h-[15px] accent-green-500 cursor-pointer"
+                          @change="pickAttributeValue(attr.id, ch.label)"
+                        >
+                        {{ ch.label }}
+                      </label>
+                      <span v-if="attr.noChoices" class="text-xs text-slate-400">No preset values — add on the Attributes page</span>
+                    </div>
+
+                    <!-- Select type: chips + add-value dropdown -->
+                    <div v-else-if="attr.isSelectValue" class="flex flex-wrap gap-1.5 items-center">
                       <span
                         v-for="chip in attr.valueChips"
                         :key="chip"
@@ -1020,12 +1062,13 @@ function onConfirmDiscard() {
                           <option value="">
                             + Add value
                           </option>
-                          <option v-for="opt in attr.valueOptions" :key="opt" :value="opt">
+                          <option v-for="opt in attr.availableValues" :key="opt" :value="opt">
                             {{ opt }}
                           </option>
                         </select>
                       </div>
-                      <span v-if="attr.noValueOptions" class="text-xs text-slate-400 p-1">{{ attr.valuesEmptyHint }}</span>
+                      <span v-if="attr.noChoices" class="text-xs text-slate-400 p-1">No preset values — add on the Attributes page</span>
+                      <span v-else-if="attr.allSelected" class="text-xs text-slate-400 p-1">All values added</span>
                     </div>
                   </div>
                   <button
@@ -1069,20 +1112,17 @@ function onConfirmDiscard() {
 
             <div v-if="variants.length" class="border border-slate-200 rounded-[10px] overflow-hidden">
               <div class="overflow-x-auto">
-                <div class="min-w-[700px]">
-                  <div class="grid grid-cols-[minmax(140px,1.4fr)_130px_110px_90px_60px_80px_40px] gap-2 items-center px-4 py-2.5 bg-slate-50 border-b border-slate-200">
+                <div class="min-w-[420px]">
+                  <div class="grid grid-cols-[minmax(160px,1.6fr)_150px_90px_40px] gap-2 items-center px-4 py-2.5 bg-slate-50 border-b border-slate-200">
                     <span class="text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Variant</span>
                     <span class="text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">SKU</span>
-                    <span class="text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Price</span>
-                    <span class="text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Stock</span>
-                    <span class="text-xs font-bold text-slate-500 uppercase tracking-[0.03em] text-center">Image</span>
                     <span class="text-xs font-bold text-slate-500 uppercase tracking-[0.03em] text-center">Status</span>
                     <span />
                   </div>
                   <div
                     v-for="v in variants"
                     :key="v.key"
-                    class="grid grid-cols-[minmax(140px,1.4fr)_130px_110px_90px_60px_80px_40px] gap-2 items-center px-4 py-2 border-b border-slate-100"
+                    class="grid grid-cols-[minmax(160px,1.6fr)_150px_90px_40px] gap-2 items-center px-4 py-2 border-b border-slate-100"
                   >
                     <span class="text-sm font-semibold text-slate-900">{{ v.name }}</span>
                     <input
@@ -1092,33 +1132,6 @@ function onConfirmDiscard() {
                       placeholder="SKU"
                       @input="updateVariant(v.key, 'sku', ($event.target as HTMLInputElement).value)"
                     >
-                    <div class="relative">
-                      <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-[13px] text-slate-400">¥</span>
-                      <input
-                        class="field-input pl-[22px] pr-2.5 py-[7px] text-[13px]"
-                        type="number"
-                        :value="v.price"
-                        placeholder="0.00"
-                        @input="updateVariant(v.key, 'price', ($event.target as HTMLInputElement).value)"
-                      >
-                    </div>
-                    <input
-                      class="field-input px-2.5 py-[7px] text-[13px]"
-                      type="number"
-                      :value="v.stock"
-                      placeholder="0"
-                      @input="updateVariant(v.key, 'stock', ($event.target as HTMLInputElement).value)"
-                    >
-                    <div class="text-center">
-                      <button
-                        title="Upload image"
-                        class="btn-icon-hover w-9 h-9 border border-dashed border-slate-300 rounded-lg bg-slate-50 cursor-pointer inline-flex items-center justify-center text-slate-400 overflow-hidden p-0"
-                        @click="pickVariantImage(v.key)"
-                      >
-                        <img v-if="v.image" :src="v.image" class="w-9 h-9 object-cover block">
-                        <UIcon v-else name="i-lucide-image-plus" class="w-4 h-4" />
-                      </button>
-                    </div>
                     <div class="text-center">
                       <button :style="trackStyle(v.active)" @click="toggleVariantActive(v.key)">
                         <span :style="knobStyle(v.active)" />
@@ -1146,13 +1159,6 @@ function onConfirmDiscard() {
                 Click Apply to generate variant combinations.
               </div>
             </div>
-            <input
-              ref="variantImageInput"
-              type="file"
-              accept="image/*"
-              class="hidden"
-              @change="onVariantImageChange"
-            >
           </div>
 
           <!-- Bundle -->
@@ -1233,14 +1239,7 @@ function onConfirmDiscard() {
 
           <!-- Pricing -->
           <div class="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
-            <div
-              v-if="notForSale"
-              class="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3.5 py-2.5 mb-4 text-[13px] text-amber-800"
-            >
-              <UIcon name="i-lucide-info" class="w-[15px] h-[15px] flex-shrink-0" />
-              This product is marked "Not for sale" — pricing is optional and not shown to customers.
-            </div>
-            <div :style="pricingBodyStyle">
+            <div>
               <div class="flex items-start justify-between gap-3 mb-4">
                 <div>
                   <h2 class="text-base font-bold text-slate-900 mt-0 mb-1">

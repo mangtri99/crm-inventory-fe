@@ -2,6 +2,7 @@
 import type {
   AttributeDef,
   Category,
+  Fee,
   Platform,
   ProductStatus,
   ProductType
@@ -14,7 +15,8 @@ const router = useRouter()
 
 // ── shapes ──
 interface DetailVariant { name: string, sku: string, price: number | string, stock: number | string, active: boolean, image?: string | null }
-interface PricingVersion { version?: string, monthly?: string | number, initial?: number, components?: { feeId: string, published: boolean, amount: string }[], active?: boolean }
+interface PricingComponent { feeId: string, published: boolean, amount: string | number }
+interface PricingVersion { version?: string, isSubscription?: boolean, monthly?: string | number, initial?: number, components?: PricingComponent[], active?: boolean }
 interface DetailProduct {
   id: string | null
   name: string
@@ -99,7 +101,7 @@ function seedHistory(): HistoryEntry[] {
     ] },
     { id: 's3', actor: 'Demi Wilkinson', ts: now - DAY * 4 - 7200000, changes: [
       { field: 'Description', from: '—', to: 'Tourist data SIM, valid 8–31 days' },
-      { field: 'Not for sale', from: 'Yes', to: 'No' }
+      { field: 'Mark as gift', from: 'Yes', to: 'No' }
     ] },
     { id: 's4', actor: 'Candice Wu', ts: now - DAY * 12 - 3600000, changes: [
       { field: 'Category', from: 'Data Plan', to: 'SIM Card' }
@@ -112,6 +114,12 @@ const mode = ref<'view' | 'edit'>('view')
 const openDropdown = ref<string | null>(null)
 const scope = ref('default')
 const draftOverrides = ref<Overrides>({})
+
+// ── pricing (re-added in Master v3 for non-variant products) ──
+const fees = ref<Fee[]>(FEE_SEED)
+const editIsSubscription = ref(true)
+const editMonthly = ref<string | number>('')
+const editInitialComponents = ref<PricingComponent[]>([])
 const editAttributes = ref<EditAttr[]>([])
 const editVariants = ref<DetailVariant[]>([])
 const editAppliedKey = ref<string | null>(null)
@@ -129,11 +137,8 @@ const attributeDefs = ref<AttributeDef[]>([])
 
 const isStored = ref(false)
 let editSnapshot: string | null = null
-let variantImageTarget: string | null = null
 let toastTimer: number | null = null
 let deleteTimer: number | null = null
-
-const variantImageInput = ref<HTMLInputElement | null>(null)
 
 function normalizeProduct(rec: DetailProduct | null): { product: DetailProduct, stored: boolean } {
   const base: DetailProduct = rec ? { ...DEMO_PRODUCT, ...rec } : { ...DEMO_PRODUCT }
@@ -167,6 +172,7 @@ onMounted(() => {
   categories.value = loadCategories()
   platforms.value = loadPlatforms()
   attributeDefs.value = loadAttributeDefs()
+  fees.value = loadFees()
   historyEntries.value = seedHistory()
   const rec = loadRecordById(route.query.id)
   const norm = normalizeProduct(rec)
@@ -374,11 +380,11 @@ const statusHelper = computed(() =>
 )
 const notForSaleHelper = computed(() =>
   (isEditMode.value ? draft.value.notForSale : product.value.notForSale)
-    ? 'Not for sale — gift / not purchasable'
-    : 'Available for purchase'
+    ? 'Marked as gift'
+    : 'Regular product'
 )
-const notForSaleBadge = computed(() => product.value.notForSale ? 'Not for sale' : 'For sale')
-const notForSaleBadgeStyle = computed(() => badgeStyle(product.value.notForSale ? 'Inactive' : 'Active'))
+const notForSaleBadge = computed(() => product.value.notForSale ? 'Gift' : '')
+const notForSaleBadgeStyle = computed(() => badgeStyle(product.value.notForSale ? 'Active' : 'Inactive'))
 function toggleNotForSale() {
   draft.value = { ...draft.value, notForSale: !draft.value.notForSale }
 }
@@ -466,26 +472,143 @@ function updateEditVariant(name: string, field: 'sku' | 'price' | 'stock' | 'ima
 function removeEditVariant(name: string) {
   editVariants.value = editVariants.value.filter(v => v.name !== name)
 }
-function pickVariantImage(name: string) {
-  variantImageTarget = name
-  if (variantImageInput.value) {
-    variantImageInput.value.value = ''
-    variantImageInput.value.click()
-  }
-}
-function onVariantImageChange(e: Event) {
-  const file = (e.target as HTMLInputElement).files?.[0]
-  const name = variantImageTarget
-  if (!file || !name || !file.type.startsWith('image/')) return
-  const reader = new FileReader()
-  reader.onload = ev => updateEditVariant(name, 'image', String(ev.target?.result || ''))
-  reader.readAsDataURL(file)
-}
 
 const statusBadgeStyleProduct = computed(() => badgeStyle(product.value.status))
 const notesDisplay = computed(() => product.value.notes && product.value.notes.trim() ? product.value.notes : '—')
 const productTypeLabel = computed(() => product.value.productType ? product.value.productType.charAt(0).toUpperCase() + product.value.productType.slice(1) : '')
-const showLowerSpacer = computed(() => !isVariantProduct.value)
+// v3 removed the lower spacer entirely
+const showLowerSpacer = computed(() => false)
+
+// ── pricing card (non-variant products only) ──
+const isSinglePricing = computed(() => !isVariantProduct.value)
+const basePricingVersion = computed<PricingVersion>(() => product.value.pricing?.[0] || {})
+
+function feeNameOf(feeId: string) {
+  return feeById(fees.value, feeId)?.name || 'Component'
+}
+function yen(n: number) {
+  return '¥' + Math.round(n).toLocaleString('en-US')
+}
+
+const viewIsSubscription = computed(() => {
+  const v = basePricingVersion.value
+  return v.isSubscription === undefined ? true : !!v.isSubscription
+})
+const viewSubscriptionLabel = computed(() =>
+  viewIsSubscription.value ? 'Recurring — monthly fee' : 'One-time purchase'
+)
+const viewMonthlyLabel = computed(() => {
+  const m = basePricingVersion.value.monthly
+  return (m === '' || m == null) ? '—' : '¥' + Number(m).toFixed(2)
+})
+// Deviation from the design: it reads the breakdown from DEMO pricing only, so
+// a stored product always rendered an empty table. Read the stored record.
+const publishedBaseComponents = computed(() =>
+  (basePricingVersion.value.components || []).filter(c => c.published === undefined ? true : c.published)
+)
+const initialBreakdown = computed(() => publishedBaseComponents.value.map(c => ({
+  feeId: c.feeId,
+  label: feeNameOf(c.feeId),
+  amountLabel: yen(parseFloat(String(c.amount)) || 0)
+})))
+const hasInitialBreakdown = computed(() => initialBreakdown.value.length > 0)
+const initialBreakdownTotal = computed(() =>
+  yen(publishedBaseComponents.value.reduce((t, c) => t + (parseFloat(String(c.amount)) || 0), 0))
+)
+
+const subscriptionHelper = computed(() =>
+  editIsSubscription.value ? 'Recurring — customers pay a monthly fee.' : 'One-time purchase — no monthly fee.'
+)
+const editSubscriptionLabel = computed(() =>
+  editIsSubscription.value ? 'Subscription' : 'One-time purchase'
+)
+// Under a platform scope the component set is fixed in Default — only amounts
+// are overridable here.
+const feeComponentsLocked = computed(() => scope.value !== 'default')
+const canAddEditComponent = computed(() => scope.value === 'default')
+
+const scopeComponentAmounts = computed<Record<string, string>>(() =>
+  (draftOverrides.value[scope.value] || {}).componentAmounts || {}
+)
+
+const editComponentRows = computed(() => {
+  const locked = feeComponentsLocked.value
+  const chosen = editInitialComponents.value.map(c => c.feeId).filter(Boolean)
+  return editInitialComponents.value.map((c, i) => {
+    const isBase = c.feeId === FEE_BASE_ID
+    const amt = locked
+      ? (scopeComponentAmounts.value[c.feeId] !== undefined ? scopeComponentAmounts.value[c.feeId] : '')
+      : c.amount
+    return {
+      index: i,
+      feeId: c.feeId,
+      name: feeById(fees.value, c.feeId)?.name || 'Select component...',
+      locked: isBase,
+      selectable: !isBase,
+      selectDisabled: locked,
+      options: fees.value.filter(f => f.id === c.feeId || chosen.indexOf(f.id) === -1),
+      amount: amt,
+      published: c.published,
+      publishLocked: isBase || locked,
+      publishTitle: isBase
+        ? 'Base Price is always published'
+        : (locked ? 'Publish is set in Default scope' : (c.published ? 'Published' : 'Unpublished')),
+      canRemove: !isBase && !locked,
+      dimmed: !c.published
+    }
+  })
+})
+
+function setComponentFee(index: number, feeId: string) {
+  editInitialComponents.value = editInitialComponents.value.map((x, i) => i === index ? { ...x, feeId } : x)
+}
+function setComponentAmount(index: number, value: string) {
+  if (scope.value === 'default') {
+    editInitialComponents.value = editInitialComponents.value.map((x, i) => i === index ? { ...x, amount: value } : x)
+    return
+  }
+  const sc = scope.value
+  const cur = { ...(draftOverrides.value[sc] || {}) }
+  const amts = { ...(cur.componentAmounts || {}) }
+  const fid = editInitialComponents.value[index]?.feeId || ''
+  if (value === '') Reflect.deleteProperty(amts, fid)
+  else amts[fid] = value
+  cur.componentAmounts = amts
+  draftOverrides.value = { ...draftOverrides.value, [sc]: cur }
+}
+function toggleComponentPublish(index: number) {
+  const c = editInitialComponents.value[index]
+  if (!c || c.feeId === FEE_BASE_ID || feeComponentsLocked.value) return
+  editInitialComponents.value = editInitialComponents.value.map((x, i) => i === index ? { ...x, published: !x.published } : x)
+}
+function removeComponent(index: number) {
+  editInitialComponents.value = editInitialComponents.value.filter((_, i) => i !== index)
+}
+function addEditComponent() {
+  editInitialComponents.value = [...editInitialComponents.value, { feeId: '', published: true, amount: '' }]
+}
+
+const editInitialTotal = computed(() => editInitialComponents.value.reduce((t, c) => {
+  if (!c.published || !c.feeId) return t
+  const a = scope.value === 'default'
+    ? c.amount
+    : (scopeComponentAmounts.value[c.feeId] !== undefined && scopeComponentAmounts.value[c.feeId] !== ''
+        ? scopeComponentAmounts.value[c.feeId]
+        : c.amount)
+  return t + (parseFloat(String(a)) || 0)
+}, 0))
+const editInitialTotalLabel = computed(() => yen(editInitialTotal.value))
+
+// Seed the pricing editor from the stored base version.
+function seedPricingEdit(p: DetailProduct) {
+  const baseV: PricingVersion = p.pricing?.[0] || {}
+  editIsSubscription.value = baseV.isSubscription === undefined ? true : !!baseV.isSubscription
+  editMonthly.value = baseV.monthly != null ? baseV.monthly : ''
+  const src = baseV.components || []
+  editInitialComponents.value = src.length
+    ? src.map(c => ({ feeId: c.feeId || FEE_BASE_ID, published: c.published === undefined ? true : !!c.published, amount: c.amount }))
+    : [{ feeId: FEE_BASE_ID, published: true, amount: '' }]
+}
 
 // ── version history ──
 const AVATAR_COLORS = ['#00a155', '#2563eb', '#d97706', '#7c3aed', '#db2777']
@@ -539,7 +662,7 @@ function diffChanges(before: DetailProduct, after: DetailProduct): HistoryChange
   push('Category', before.category, after.category)
   push('Stock', before.stock === 'out_stock' ? 'Out of stock' : 'In stock', after.stock === 'out_stock' ? 'Out of stock' : 'In stock')
   push('Status', before.status, after.status)
-  push('Not for sale', before.notForSale ? 'Yes' : 'No', after.notForSale ? 'Yes' : 'No')
+  push('Mark as gift', before.notForSale ? 'Yes' : 'No', after.notForSale ? 'Yes' : 'No')
   const bp = (before.platformIds || []).join(', ')
   const ap = (after.platformIds || []).join(', ')
   if (bp !== ap) out.push({ field: 'Platforms', from: bp || '—', to: ap || '—' })
@@ -564,6 +687,7 @@ function onEditClick() {
   editVariants.value = seed.variants
   editAppliedKey.value = attrKey(seed.attrs)
   draftOverrides.value = JSON.parse(JSON.stringify(product.value.overrides || {}))
+  seedPricingEdit(product.value)
   errors.value = {}
   scope.value = 'default'
   mode.value = 'edit'
@@ -612,8 +736,23 @@ function onSaveClick() {
     errors.value = errs
     return
   }
-  // pricing is left exactly as stored — this screen no longer edits it
   const merged: DetailProduct = { ...d }
+  if (isSinglePricing.value) {
+    const comps = editInitialComponents.value
+      .filter(c => c.feeId)
+      .map(c => ({ feeId: c.feeId, published: !!c.published, amount: c.amount }))
+    const initial = comps.reduce((t, c) => t + (c.published ? (parseFloat(String(c.amount)) || 0) : 0), 0)
+    const existing: PricingVersion = d.pricing?.[0] || {}
+    merged.pricing = [{
+      ...existing,
+      version: existing.version || 'v1',
+      isSubscription: editIsSubscription.value,
+      monthly: editIsSubscription.value ? editMonthly.value : '',
+      initial,
+      components: comps,
+      active: existing.active !== undefined ? existing.active : true
+    }, ...(d.pricing || []).slice(1)]
+  }
   merged.platformIds = d.platformIds || []
   merged.platformNames = platformNamesOf(d.platformIds || [])
   const cleanOv: Overrides = {}
@@ -1060,13 +1199,14 @@ function onConfirmDelete() {
           <div class="flex items-center justify-between pt-4 mt-4 border-t border-slate-100">
             <div>
               <div class="text-sm font-semibold text-slate-900">
-                Not for sale
+                Mark as gift
               </div>
               <div class="text-[13px] text-slate-500 mt-0.5">
                 {{ notForSaleHelper }}
               </div>
             </div>
-            <span v-if="isViewMode" :style="notForSaleBadgeStyle">{{ notForSaleBadge }}</span>
+            <span v-if="isViewMode && product.notForSale" :style="notForSaleBadgeStyle">{{ notForSaleBadge }}</span>
+            <span v-else-if="isViewMode" />
             <button v-else :style="trackStyle(!!draft.notForSale)" @click="toggleNotForSale">
               <span :style="knobStyle(!!draft.notForSale)" />
             </button>
@@ -1188,20 +1328,17 @@ function onConfirmDelete() {
 
               <div class="border border-slate-200 rounded-[10px] overflow-hidden">
                 <div class="overflow-x-auto">
-                  <div class="min-w-[700px]">
-                    <div class="grid grid-cols-[minmax(140px,1.4fr)_130px_110px_90px_60px_80px_40px] gap-2 items-center px-4 py-2.5 bg-slate-50 border-b border-slate-200">
+                  <div class="min-w-[420px]">
+                    <div class="grid grid-cols-[minmax(140px,1.4fr)_130px_80px_40px] gap-2 items-center px-4 py-2.5 bg-slate-50 border-b border-slate-200">
                       <span class="text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Variant</span>
                       <span class="text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">SKU</span>
-                      <span class="text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Price</span>
-                      <span class="text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Stock</span>
-                      <span class="text-xs font-bold text-slate-500 uppercase tracking-[0.03em] text-center">Image</span>
                       <span class="text-xs font-bold text-slate-500 uppercase tracking-[0.03em] text-center">Status</span>
                       <span />
                     </div>
                     <div
                       v-for="ev in editVariants"
                       :key="ev.name"
-                      class="grid grid-cols-[minmax(140px,1.4fr)_130px_110px_90px_60px_80px_40px] gap-2 items-center px-4 py-2 border-b border-slate-100"
+                      class="grid grid-cols-[minmax(140px,1.4fr)_130px_80px_40px] gap-2 items-center px-4 py-2 border-b border-slate-100"
                     >
                       <span class="text-sm font-semibold text-slate-900">{{ ev.name }}</span>
                       <input
@@ -1211,33 +1348,6 @@ function onConfirmDelete() {
                         placeholder="SKU"
                         @input="updateEditVariant(ev.name, 'sku', ($event.target as HTMLInputElement).value)"
                       >
-                      <div class="relative">
-                        <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-[13px] text-slate-400">¥</span>
-                        <input
-                          class="field-input pl-[22px] pr-2.5 py-[7px] text-[13px]"
-                          type="number"
-                          :value="ev.price"
-                          placeholder="0.00"
-                          @input="updateEditVariant(ev.name, 'price', ($event.target as HTMLInputElement).value)"
-                        >
-                      </div>
-                      <input
-                        class="field-input px-2.5 py-[7px] text-[13px]"
-                        type="number"
-                        :value="ev.stock"
-                        placeholder="0"
-                        @input="updateEditVariant(ev.name, 'stock', ($event.target as HTMLInputElement).value)"
-                      >
-                      <div class="text-center">
-                        <button
-                          title="Upload image"
-                          class="btn-icon-hover w-9 h-9 border border-dashed border-slate-300 rounded-lg bg-slate-50 cursor-pointer inline-flex items-center justify-center text-slate-400 overflow-hidden p-0"
-                          @click="pickVariantImage(ev.name)"
-                        >
-                          <img v-if="ev.image" :src="ev.image" class="w-9 h-9 object-cover block">
-                          <UIcon v-else name="i-lucide-image-plus" class="w-4 h-4" />
-                        </button>
-                      </div>
                       <div class="text-center">
                         <button :style="trackStyle(!!ev.active)" @click="updateEditVariant(ev.name, 'active', !ev.active)">
                           <span :style="knobStyle(!!ev.active)" />
@@ -1254,13 +1364,6 @@ function onConfirmDelete() {
                   </div>
                 </div>
               </div>
-              <input
-                ref="variantImageInput"
-                type="file"
-                accept="image/*"
-                class="hidden"
-                @change="onVariantImageChange"
-              >
             </div>
 
             <!-- VIEW MODE -->
@@ -1385,6 +1488,208 @@ function onConfirmDelete() {
                 No components in this bundle.
               </div>
             </div>
+          </div>
+
+          <!-- PRICING (single / bundle) -->
+          <div v-if="isSinglePricing" class="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
+            <h2 class="text-base font-bold text-slate-900 mt-0 mb-1">
+              Pricing
+            </h2>
+            <p class="text-[13px] text-slate-500 mt-0 mb-5">
+              Subscription, monthly fee and initial fee components.
+            </p>
+
+            <!-- view mode -->
+            <template v-if="isViewMode">
+              <div class="flex flex-wrap gap-3 mb-5">
+                <div class="basis-[180px] grow shrink min-w-0 border border-slate-200 rounded-[10px] px-4 py-3.5">
+                  <div class="text-xs font-bold text-slate-500 uppercase tracking-[0.03em] mb-1.5">
+                    Subscription
+                  </div>
+                  <div class="text-sm text-slate-900">
+                    {{ viewSubscriptionLabel }}
+                  </div>
+                </div>
+                <div v-if="viewIsSubscription" class="basis-[140px] grow shrink min-w-0 border border-slate-200 rounded-[10px] px-4 py-3.5">
+                  <div class="text-xs font-bold text-slate-500 uppercase tracking-[0.03em] mb-1.5">
+                    Monthly Fee
+                  </div>
+                  <div class="text-sm text-slate-900">
+                    {{ viewMonthlyLabel }}
+                  </div>
+                </div>
+                <div class="basis-[140px] grow shrink min-w-0 border border-slate-200 rounded-[10px] px-4 py-3.5">
+                  <div class="text-xs font-bold text-slate-500 uppercase tracking-[0.03em] mb-1.5">
+                    Initial Fee
+                  </div>
+                  <div class="text-sm text-slate-900">
+                    {{ initialBreakdownTotal }}
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="hasInitialBreakdown" class="border border-slate-200 rounded-[10px] overflow-hidden">
+                <div class="flex items-center gap-2.5 px-3 py-2.5 bg-slate-50 border-b border-slate-200">
+                  <span class="flex-1 text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Component</span>
+                  <span class="w-[150px] text-xs font-bold text-slate-500 uppercase tracking-[0.03em] text-right">Amount</span>
+                </div>
+                <div
+                  v-for="b in initialBreakdown"
+                  :key="b.feeId"
+                  class="flex items-center gap-2.5 px-3 py-2.5 border-b border-slate-100"
+                >
+                  <span class="flex-1 text-sm text-slate-900">{{ b.label }}</span>
+                  <span class="w-[150px] text-sm text-slate-700 text-right">{{ b.amountLabel }}</span>
+                </div>
+                <div class="flex items-center justify-between px-3.5 py-3 bg-slate-50">
+                  <span class="text-sm font-bold text-slate-900">Initial Fee (Total)</span>
+                  <span class="text-base font-bold text-slate-900">{{ initialBreakdownTotal }}</span>
+                </div>
+              </div>
+              <div
+                v-else
+                class="border-[1.5px] border-dashed border-slate-200 rounded-[10px] px-6 py-7 text-center text-sm text-slate-400"
+              >
+                No initial fee components.
+              </div>
+            </template>
+
+            <!-- edit mode -->
+            <template v-else>
+              <div class="flex items-center justify-between gap-3 px-3.5 py-3 border border-slate-200 rounded-[10px] mb-5 bg-slate-50">
+                <div>
+                  <div class="text-sm font-semibold text-slate-900">
+                    Subscription product
+                  </div>
+                  <div class="text-[13px] text-slate-500 mt-0.5">
+                    {{ subscriptionHelper }}
+                  </div>
+                </div>
+                <div class="inline-flex items-center gap-1.5 text-[13px] font-semibold text-slate-600 bg-slate-100 border border-slate-200 rounded-full px-3 py-1">
+                  <UIcon name="i-lucide-lock" class="w-3 h-3" />{{ editSubscriptionLabel }}
+                </div>
+              </div>
+
+              <div v-if="editIsSubscription" class="mb-5 max-w-[320px]">
+                <label class="field-label">Monthly Fee</label>
+                <div class="relative">
+                  <span class="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">¥</span>
+                  <input
+                    v-model="editMonthly"
+                    class="field-input pl-[26px]"
+                    type="number"
+                    placeholder="0.00"
+                  >
+                </div>
+              </div>
+
+              <div>
+                <div class="flex items-baseline gap-2 mb-2">
+                  <label class="field-label mb-0">Initial Fee</label>
+                  <span class="text-xs text-slate-400">sum of published components below.</span>
+                </div>
+
+                <div
+                  v-if="feeComponentsLocked"
+                  class="flex items-center gap-2 mb-2.5 text-[12.5px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2"
+                >
+                  <UIcon name="i-lucide-lock" class="w-[13px] h-[13px] flex-shrink-0" />
+                  <span>Components and publish states are set in Default scope. Here you can override amounts for this platform.</span>
+                </div>
+
+                <div class="border border-slate-200 rounded-[10px] overflow-hidden">
+                  <div class="flex items-center gap-2.5 px-3 py-2.5 bg-slate-50 border-b border-slate-200">
+                    <span class="flex-1 min-w-0 text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Component</span>
+                    <span class="w-[150px] flex-shrink-0 text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Amount</span>
+                    <span class="w-24 flex-shrink-0 text-center text-xs font-bold text-slate-500 uppercase tracking-[0.03em]">Published</span>
+                    <span class="w-[38px] flex-shrink-0" />
+                  </div>
+
+                  <div
+                    v-for="c in editComponentRows"
+                    :key="c.index"
+                    class="flex items-center gap-2.5 px-3 py-2.5 border-b border-slate-100"
+                    :class="c.dimmed ? 'bg-neutral-50 opacity-70' : ''"
+                  >
+                    <div class="flex-1 min-w-0">
+                      <div v-if="c.locked" class="flex items-center gap-2 text-sm font-semibold text-slate-900 py-0.5">
+                        {{ c.name }}
+                        <span class="text-[11px] font-semibold px-2 py-px rounded-full bg-blue-50 text-blue-600 border border-blue-200">Base</span>
+                      </div>
+                      <div v-else class="select-wrap">
+                        <select
+                          class="field-input bg-white"
+                          :value="c.feeId"
+                          :disabled="c.selectDisabled"
+                          @change="setComponentFee(c.index, ($event.target as HTMLSelectElement).value)"
+                        >
+                          <option value="">
+                            Select component...
+                          </option>
+                          <option v-for="opt in c.options" :key="opt.id" :value="opt.id">
+                            {{ opt.name }}
+                          </option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div class="relative w-[150px] flex-shrink-0">
+                      <span class="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">¥</span>
+                      <input
+                        class="field-input pl-[26px]"
+                        type="number"
+                        :value="c.amount"
+                        placeholder="0"
+                        @change="setComponentAmount(c.index, ($event.target as HTMLInputElement).value)"
+                      >
+                    </div>
+
+                    <div class="w-24 flex-shrink-0 flex justify-center">
+                      <button
+                        :style="trackStyle(!!c.published)"
+                        :disabled="c.publishLocked"
+                        :title="c.publishTitle"
+                        :class="c.publishLocked ? 'opacity-60 cursor-not-allowed' : ''"
+                        @click="toggleComponentPublish(c.index)"
+                      >
+                        <span :style="knobStyle(!!c.published)" />
+                      </button>
+                    </div>
+
+                    <div class="w-[38px] flex-shrink-0">
+                      <button
+                        v-if="c.canRemove"
+                        title="Remove component"
+                        class="btn-icon-hover border border-slate-200 bg-white text-red-500 w-[38px] h-[38px] rounded-lg cursor-pointer flex items-center justify-center"
+                        @click="removeComponent(c.index)"
+                      >
+                        <UIcon name="i-lucide-trash-2" class="w-4 h-4" />
+                      </button>
+                      <span
+                        v-else-if="c.locked"
+                        class="w-[38px] h-[38px] inline-flex items-center justify-center text-slate-300"
+                      >
+                        <UIcon name="i-lucide-lock" class="w-3.5 h-3.5" />
+                      </span>
+                    </div>
+                  </div>
+
+                  <div v-if="canAddEditComponent" class="px-3 py-2.5 border-b border-slate-100">
+                    <button
+                      class="inline-flex items-center gap-1.5 border border-dashed border-green-500 bg-emerald-50 text-green-600 text-[13px] font-semibold px-3.5 py-2 rounded-lg cursor-pointer"
+                      @click="addEditComponent"
+                    >
+                      <UIcon name="i-lucide-plus" class="w-3.5 h-3.5" /> Add component
+                    </button>
+                  </div>
+
+                  <div class="flex items-center justify-between px-3.5 py-3 bg-slate-50">
+                    <span class="text-sm font-bold text-slate-900">Initial Fee (Total)</span>
+                    <span class="text-base font-bold text-slate-900">{{ editInitialTotalLabel }}</span>
+                  </div>
+                </div>
+              </div>
+            </template>
           </div>
         </div>
         <div

@@ -7,9 +7,11 @@ interface ModalState {
   id: string | null
   name: string
   desc: string
+  icon: string
   error: string
 }
 
+// fallback icon per seeded component id (rows saved before the picker existed)
 const ICONS: Record<string, string> = {
   fee_base: 'anchor',
   fee_tax: 'receipt',
@@ -17,6 +19,13 @@ const ICONS: Record<string, string> = {
   fee_handling: 'package',
   fee_insurance: 'shield-check'
 }
+const DEFAULT_ICON = 'circle-dollar-sign'
+const ICON_CHOICES = [
+  'circle-dollar-sign', 'receipt', 'truck', 'package',
+  'shield-check', 'tag', 'percent', 'coins',
+  'wallet', 'credit-card', 'gift', 'wrench',
+  'box', 'banknote', 'hand-coins', 'badge-percent'
+]
 
 // ── state (mirrors the design's DCLogic state) ──
 const fees = ref<Fee[]>([...FEE_SEED])
@@ -41,8 +50,14 @@ function showToast(msg: string) {
   }, 2800)
 }
 
-function iconOf(id: string) {
-  return ICONS[id] || 'circle-dollar-sign'
+function iconOf(f: Fee) {
+  return f.icon || ICONS[f.id] || DEFAULT_ICON
+}
+function iconChoiceStyle(selected: boolean) {
+  return `width:42px;height:42px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;background:${selected ? '#ecfdf5' : '#fff'};border:1px solid ${selected ? '#00c16a' : '#e2e8f0'};color:${selected ? '#00a155' : '#64748b'};`
+}
+function pickIcon(name: string) {
+  if (modal.value) modal.value = { ...modal.value, icon: name }
 }
 function editStyleOf(system: boolean) {
   return 'display:inline-flex;align-items:center;gap:6px;border:1px solid #e2e8f0;background:#fff;color:' + (system ? '#cbd5e1' : '#334155') + ';font-size:14px;font-weight:600;padding:7px 14px;border-radius:8px;cursor:' + (system ? 'not-allowed' : 'pointer') + ';'
@@ -50,12 +65,13 @@ function editStyleOf(system: boolean) {
 
 // ── create / edit ──
 function onCreate() {
-  modal.value = { id: null, name: '', desc: '', error: '' }
+  modal.value = { id: null, name: '', desc: '', icon: DEFAULT_ICON, error: '' }
 }
 function onEdit(f: Fee) {
   if (f.system) return
-  modal.value = { id: f.id, name: f.name, desc: f.description || '', error: '' }
+  modal.value = { id: f.id, name: f.name, desc: f.description || '', icon: iconOf(f), error: '' }
 }
+const saveDisabled = computed(() => !(modal.value && modal.value.name.trim()))
 function saveModal() {
   const m = modal.value
   if (!m) return
@@ -70,8 +86,8 @@ function saveModal() {
     return
   }
   const next = m.id
-    ? fees.value.map(f => f.id === m.id ? { ...f, name, description: m.desc } : f)
-    : [...fees.value, { id: 'fee_' + Date.now(), name, description: m.desc, system: false }]
+    ? fees.value.map(f => f.id === m.id ? { ...f, name, description: m.desc, icon: m.icon } : f)
+    : [...fees.value, { id: 'fee_' + Date.now(), name, description: m.desc, icon: m.icon || DEFAULT_ICON, system: false }]
   saveFees(next)
   fees.value = next
   modal.value = null
@@ -113,7 +129,12 @@ const deleteCancelLabel = computed(() => deleteBlocked.value ? 'Close' : 'Cancel
     <div class="text-[13px] text-slate-500 mb-3.5">
       <NuxtLink to="/dashboard" class="text-green-600 no-underline hover:text-green-700">
         Inventory
-      </NuxtLink> <span class="text-slate-300">/</span> <span class="text-slate-900 font-semibold">Pricing Setting</span>
+      </NuxtLink> <span class="text-slate-300">/</span>
+      <NuxtLink to="/dashboard" class="text-green-600 no-underline hover:text-green-700">
+        Product
+      </NuxtLink> <span class="text-slate-300">/</span>
+      <span class="text-green-600">Configuration</span> <span class="text-slate-300">/</span>
+      <span class="text-slate-900 font-semibold">Pricing Setting</span>
     </div>
 
     <div class="flex items-start justify-between gap-4 mb-6 flex-wrap">
@@ -151,7 +172,7 @@ const deleteCancelLabel = computed(() => deleteBlocked.value ? 'Close' : 'Cancel
               <td class="px-5 py-3.5">
                 <div class="flex items-center gap-2.5">
                   <div class="w-[34px] h-[34px] rounded-lg bg-emerald-50 text-green-600 flex items-center justify-center flex-shrink-0">
-                    <UIcon :name="'i-lucide-' + iconOf(f.id)" class="w-4 h-4" />
+                    <UIcon :name="'i-lucide-' + iconOf(f)" class="w-4 h-4" />
                   </div>
                   <div>
                     <div class="flex items-center gap-2">
@@ -231,6 +252,21 @@ const deleteCancelLabel = computed(() => deleteBlocked.value ? 'Close' : 'Cancel
               {{ modal.error }}
             </div>
           </div>
+          <div class="mb-[18px]">
+            <label class="field-label">Icon</label>
+            <div class="flex flex-wrap gap-2">
+              <button
+                v-for="ic in ICON_CHOICES"
+                :key="ic"
+                type="button"
+                :title="ic"
+                :style="iconChoiceStyle(modal.icon === ic)"
+                @click="pickIcon(ic)"
+              >
+                <UIcon :name="'i-lucide-' + ic" class="w-[18px] h-[18px]" />
+              </button>
+            </div>
+          </div>
           <div>
             <label class="field-label">Description <span class="text-slate-400 font-normal">(optional)</span></label>
             <input
@@ -250,7 +286,9 @@ const deleteCancelLabel = computed(() => deleteBlocked.value ? 'Close' : 'Cancel
             Cancel
           </button>
           <button
-            class="border-none bg-green-500 text-white text-[15px] font-bold px-5 py-[9px] rounded-lg cursor-pointer"
+            :disabled="saveDisabled"
+            class="border-none text-[15px] font-bold px-5 py-[9px] rounded-lg transition-colors"
+            :class="saveDisabled ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-green-500 text-white cursor-pointer hover:bg-green-600'"
             @click="saveModal"
           >
             Save
